@@ -284,8 +284,8 @@ export class Room {
     }
 
     if (isFirstInput) {
-      // The first card click is what converts the 3s start timer into the
-      // 10s answer timer.
+      // The first card click is what converts the start timer into the
+      // answer timer.
       this.startTimer('answer', ANSWER_TIMEOUT_MS, () => this.finishAttempt(false));
     }
 

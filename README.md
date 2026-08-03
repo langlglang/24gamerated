@@ -92,7 +92,7 @@ That this matches the documented set for a 1–13 deck is a useful independent c
 
 1. Four cards are revealed to everyone at once.
 2. Any eligible player may **Buzz** or **Call No Solution**.
-3. **Buzz** → the buzzer has **3 s** to touch their first card, then **10 s** from that first touch
+3. **Buzz** → the buzzer has **5 s** to touch their first card, then **10 s** from that first touch
    to combine down to one card. Everyone else's input is locked while they answer.
 4. **Call No Solution** → correct if the hand genuinely has none; otherwise it costs them.
 5. A result overlay shows who scored and, when the hand was solvable, one valid solution.
@@ -162,7 +162,7 @@ Every tunable lives in `shared/src/constants.ts`:
 
 | Constant | Default |
 | --- | --- |
-| `BUZZ_START_TIMEOUT_MS` | 3 000 |
+| `BUZZ_START_TIMEOUT_MS` | 5 000 |
 | `ANSWER_TIMEOUT_MS` | 10 000 |
 | `HAND_IDLE_TIMEOUT_MS` | 60 000 |
 | `HAND_RESULT_DISPLAY_MS` | 5 000 |

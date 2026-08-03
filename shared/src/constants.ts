@@ -17,7 +17,7 @@ export const REQUIRED_COMBINE_STEPS = CARDS_PER_HAND - 1;
 export const HANDS_PER_MATCH = 13;
 
 /** After buzzing, how long the buzzer has to make their FIRST card click. */
-export const BUZZ_START_TIMEOUT_MS = 3_000;
+export const BUZZ_START_TIMEOUT_MS = 5_000;
 
 /** From that first click, how long they have to finish combining to one card. */
 export const ANSWER_TIMEOUT_MS = 10_000;

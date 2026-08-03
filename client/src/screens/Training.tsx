@@ -166,7 +166,7 @@ export function Training({ onExit }: { onExit: () => void }) {
     <div className="mx-auto flex min-h-full w-full max-w-md flex-col justify-center gap-5 p-5">
       <h1 className="text-center text-3xl font-black text-emerald-400">Training arena</h1>
       <p className="text-center text-sm text-slate-400">
-        One full deck, 13 hands, the same 3-second start and 10-second answer clocks as a real
+        One full deck, 13 hands, the same 5-second start and 10-second answer clocks as a real
         match.
       </p>
       <div className="panel">
