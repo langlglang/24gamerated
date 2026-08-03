@@ -1,0 +1,23 @@
+# Claude Code local settings (machine-specific permissions)
+.claude/settings.local.json
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment / secrets
+.env
+.env.local
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
