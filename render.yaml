@@ -1,0 +1,25 @@
+# Render Blueprint. In the Render dashboard: New > Blueprint, point it at this
+# repo, and it reads this file instead of you filling in a form.
+#
+# Two things here are load-bearing and easy to get wrong by hand:
+#
+#   1. `npm ci --include=dev` — NODE_ENV=production makes npm skip
+#      devDependencies, which is where typescript and vite live. Without the
+#      flag the build fails with "vite: not found".
+#
+#   2. One instance, always. Rooms are in-memory, so a second instance would
+#      serve players who cannot see each other. Never raise numInstances and
+#      never enable autoscaling for this service.
+services:
+  - type: web
+    name: 24gameonline
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: '22'

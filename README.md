@@ -203,14 +203,35 @@ npm run smoke                   # terminal 2
 One process serves everything:
 
 ```bash
-npm ci
+npm ci --include=dev
 npm run build
 NODE_ENV=production PORT=3000 npm start
 ```
 
-Any host that runs a long-lived Node process with WebSocket support works (Fly.io, Render, Railway,
-a VPS). Because rooms are in-memory, **run a single instance** — or add sticky sessions plus a
-shared room store before scaling out.
+Any host that runs a long-lived Node process with WebSocket support works. Two rules apply
+everywhere:
+
+- **`--include=dev` at install time.** With `NODE_ENV=production` set, npm skips devDependencies —
+  which is where `typescript` and `vite` live — and the build dies with `vite: not found`.
+- **Exactly one instance.** Rooms are in-memory, so a second instance would serve players who
+  cannot see each other. No autoscaling. Scaling out means adding sticky sessions plus a shared
+  room store first.
+
+### Render
+
+`render.yaml` in the repo root is a Blueprint, so there is no form to fill in:
+
+1. Push to GitHub.
+2. Render dashboard → **New → Blueprint** → pick the repo → **Apply**.
+3. Wait for the first build, then open the `*.onrender.com` URL.
+
+Every later `git push` to `main` redeploys automatically.
+
+The free plan sleeps after 15 minutes of inactivity. A sleeping service loses all in-memory rooms
+and takes roughly 50 seconds to wake, so a match interrupted by sleep is gone. Upgrade the service
+to a paid instance type to stay warm for real play.
+
+Render injects `PORT`; the server already reads it.
 
 ---
 
