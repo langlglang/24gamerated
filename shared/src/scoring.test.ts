@@ -68,17 +68,28 @@ describe('3-player scoring', () => {
     expect(r.lockOut).toBe('alice');
   });
 
-  it('keeps the hand alive after a second failure', () => {
+  it('auto-awards the point to the last player on a second failed buzz', () => {
+    // alice already failed; bob now fails too, so cara takes the point
+    // without having to buzz at all.
     const r = resolveBuzz(p3(true, ['alice']), 'bob', false);
-    expect(r.handEnds).toBe(false);
+    expect(r.points).toEqual({ cara: 1 });
+    expect(r.handEnds).toBe(true);
     expect(r.lockOut).toBe('bob');
   });
 
-  it('ends with no points once all three have failed', () => {
-    const r = resolveBuzz(p3(true, ['alice', 'bob']), 'cara', false);
-    expect(r.points).toEqual({});
+  it('auto-awards regardless of whether the hand was solvable', () => {
+    const r = resolveBuzz(p3(false, ['alice']), 'bob', false);
+    expect(r.points).toEqual({ cara: 1 });
     expect(r.handEnds).toBe(true);
-    expect(r.lockOut).toBe('cara');
+  });
+
+  it('never reaches a third buzz — two failures already ended the hand', () => {
+    // Both other players failing is terminal, so no state exists in which a
+    // third player can buzz and fail.
+    const first = resolveBuzz(p3(true), 'alice', false);
+    expect(first.handEnds).toBe(false);
+    const second = resolveBuzz(p3(true, ['alice']), 'bob', false);
+    expect(second.handEnds).toBe(true);
   });
 
   it('pays a correct no-solution call in full', () => {
@@ -106,11 +117,11 @@ describe('3-player scoring', () => {
     expect(r.points).toEqual({ bob: 1 });
   });
 
-  it('pays nobody when the last player calls wrong and both others already failed', () => {
-    // Not covered by the spec: there is no uninvolved third player left.
-    const r = resolveNoSolutionCall(p3(true, ['alice', 'bob']), 'cara');
-    expect(r.points).toEqual({});
-    expect(r.handEnds).toBe(true);
+  it('can only ever face one locked-out player when a call is made', () => {
+    // Two failed buzzes end the hand outright, so a caller never sees two
+    // locked-out opponents. This pins that invariant.
+    const afterTwoFailures = resolveBuzz(p3(true, ['alice']), 'bob', false);
+    expect(afterTwoFailures.handEnds).toBe(true);
   });
 });
 

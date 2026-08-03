@@ -104,11 +104,16 @@ That this matches the documented set for a 1–13 deck is a useful independent c
 **2-player** — buzz correct: +1 buzzer. Buzz failed: +1 opponent, hand ends. No-solution correct:
 +1 caller. No-solution wrong: +1 opponent.
 
-**3-player** — buzz correct: +1 buzzer, hand ends. Buzz failed: buzzer is locked out and the hand
-*continues* for the other two on the same cards; if all three fail, nobody scores. No-solution call
-when nobody has buzzed yet — correct: +1 caller; wrong: **0.5 to each** of the other two. No-solution
-call after someone has already buzzed and failed — correct: +1 caller; wrong: +1 to the player who
-neither buzzed nor called.
+**3-player** — buzz correct: +1 buzzer, hand ends. Buzz failed: the buzzer is locked out and the
+hand *continues* for the other two on the same cards. If a second player also buzzes and fails, the
+hand ends immediately and **the point is auto-awarded to the player who stayed out** — they never
+have to buzz to collect it, and this holds whether or not the hand was solvable. No-solution call
+when nobody has buzzed yet — correct: +1 caller; wrong: **0.5 to each** of the other two.
+No-solution call after someone has already buzzed and failed — correct: +1 caller; wrong: +1 to the
+player who neither buzzed nor called.
+
+Because two failed buzzes end the hand, a no-solution caller can face at most one locked-out
+opponent, and no hand can reach a third buzz.
 
 **4-player (2v2)** — like 2-player but scored per team; any member may act for their team, and a
 team's failed attempt ends the hand.
@@ -211,9 +216,6 @@ shared room store before scaling out.
 
 ## Known gaps
 
-- **3-player corner case not in the spec:** if two players have already buzzed and failed and the
-  last remaining player calls "no solution" wrongly, there is no uninvolved third player to award
-  the point to, so nobody scores. Flagged rather than guessed at.
 - **Resume after a pause** returns the hand to open play with a fresh idle clock rather than
   restoring the exact remaining time.
 - No spectator seats beyond the players in the room, no bots or substitutes for dropped players,

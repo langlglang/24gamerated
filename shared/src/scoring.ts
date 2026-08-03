@@ -94,15 +94,28 @@ export function resolveBuzz(
   if (correct) {
     return { points: { [buzzerId]: 1 }, handEnds: true, lockOut: null, note: 'Buzzer solved it' };
   }
+
+  // A failed buzz locks the buzzer out and the hand continues. Once two
+  // players have failed, the hand ends immediately and the point goes to the
+  // one who stayed out — they never have to buzz to collect it.
   const lockedAfter = new Set([...ctx.lockedOut, buzzerId]);
-  const everyoneFailed = ctx.playerIds.every((id) => lockedAfter.has(id));
+  const survivors = ctx.playerIds.filter((id) => !lockedAfter.has(id));
+
+  if (survivors.length === 1) {
+    const winner = survivors[0]!;
+    return {
+      points: { [winner]: 1 },
+      handEnds: true,
+      lockOut: buzzerId,
+      note: 'Two failed buzzes — point to the player who stayed out',
+    };
+  }
+
   return {
     points: {},
-    handEnds: everyoneFailed,
+    handEnds: false,
     lockOut: buzzerId,
-    note: everyoneFailed
-      ? 'All three players failed — no points'
-      : 'Failed buzz — locked out, hand continues',
+    note: 'Failed buzz — locked out, hand continues',
   };
 }
 
@@ -113,6 +126,8 @@ export function resolveBuzz(
  * their buzz on this hand:
  *  - nobody has     -> the other two split the blame reward, 0.5 each
  *  - someone has    -> the single player who neither buzzed nor called takes 1
+ *
+ * See [resolveBuzz] for the matching rule on a second failed buzz.
  */
 export function resolveNoSolutionCall(
   ctx: HandScoringContext,
@@ -184,9 +199,10 @@ export function resolveNoSolutionCall(
     };
   }
 
-  // Someone already buzzed and failed. The reward goes to the player who
-  // neither buzzed nor called. If every non-caller has already failed there is
-  // no such player, so nobody scores.
+  // Someone already buzzed and failed, so the reward goes to the player who
+  // neither buzzed nor called. At most one player can be locked out when a
+  // call happens — a second failed buzz ends the hand outright — so there is
+  // always exactly one such player. The empty fallback is defensive only.
   const innocent = ctx.playerIds.filter(
     (id) => id !== callerId && !ctx.lockedOut.includes(id),
   );
