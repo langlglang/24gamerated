@@ -26,7 +26,7 @@ export const ANSWER_TIMEOUT_MS = 10_000;
  * Wall clock for a whole hand when nobody buzzes and nobody calls no-solution.
  * On expiry the hand is a wash: no points, reveal a solution if one exists.
  */
-export const HAND_IDLE_TIMEOUT_MS = 60_000;
+export const HAND_IDLE_TIMEOUT_MS = 120_000;
 
 /** How long the post-hand result overlay stays up before the next deal. */
 export const HAND_RESULT_DISPLAY_MS = 5_000;

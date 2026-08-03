@@ -50,6 +50,13 @@ export interface MatchResultView {
   readonly wentToTiebreak: boolean;
 }
 
+/** Running tally across every match played in this room. */
+export interface SeriesView {
+  /** Matches won, by score key. */
+  readonly wins: Readonly<Record<ScoreKey, number>>;
+  readonly matchesPlayed: number;
+}
+
 /**
  * Everything a client needs to render. Deliberately does NOT include the
  * solver verdict for the current hand — that would give away whether "no
@@ -75,6 +82,8 @@ export interface PublicGameState {
   readonly timer: TimerView | null;
   readonly lastResult: HandResultView | null;
   readonly matchResult: MatchResultView | null;
+  /** Survives across matches — the room keeps playing until everyone leaves. */
+  readonly series: SeriesView;
   /** True during sudden-death hands after a tied 13. */
   readonly isTiebreak: boolean;
 }
@@ -91,6 +100,7 @@ export type ActionRejection =
   | 'name-taken'
   | 'wrong-player-count'
   | 'teams-unbalanced'
+  | 'player-offline'
   | 'invalid-combine';
 
 export interface ClientToServerEvents {
@@ -110,7 +120,8 @@ export interface ClientToServerEvents {
   'game:callNoSolution': () => void;
   /** One combine step from the answering player. Server validates and echoes. */
   'game:combine': (payload: { step: CombineStep }) => void;
-  'game:undo': () => void;
+  /** Host starts another match in the same room, keeping the series tally. */
+  'game:playAgain': () => void;
 }
 
 export interface ServerToClientEvents {

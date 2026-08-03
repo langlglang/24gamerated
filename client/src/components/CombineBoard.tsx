@@ -17,8 +17,6 @@ interface Props {
   /** False for spectators — they watch the combines but cannot touch them. */
   interactive: boolean;
   onCombine: (step: CombineStep) => void;
-  onUndo: () => void;
-  canUndo: boolean;
   /** Bumped by the parent whenever the server rejects a combine. */
   errorNonce?: number;
   errorMessage?: string | null;
@@ -29,8 +27,6 @@ export function CombineBoard({
   table,
   interactive,
   onCombine,
-  onUndo,
-  canUndo,
   errorNonce = 0,
   errorMessage,
 }: Props) {
@@ -116,14 +112,6 @@ export function CombineBoard({
             {OP_SYMBOL[op]}
           </button>
         ))}
-        <button
-          type="button"
-          disabled={!interactive || !canUndo}
-          onClick={onUndo}
-          className="ml-2 h-14 rounded-xl bg-slate-800 px-4 font-semibold text-slate-100 transition hover:bg-slate-700 disabled:opacity-30"
-        >
-          Undo
-        </button>
       </div>
 
       <p className="h-5 text-sm text-rose-400">{errorMessage ?? ''}</p>

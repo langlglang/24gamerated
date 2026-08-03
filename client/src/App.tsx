@@ -49,7 +49,7 @@ export default function App() {
           onBuzz={game.buzz}
           onCallNoSolution={game.callNoSolution}
           onCombine={game.combine}
-          onUndo={game.undo}
+          onPlayAgain={game.playAgain}
           onLeave={game.leave}
         />
       )}

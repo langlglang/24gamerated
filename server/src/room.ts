@@ -101,6 +101,9 @@ export class Room {
 
   lastResult: HandResultView | null = null;
   matchResult: MatchResultView | null = null;
+  /** Matches won, kept across every match played in this room. */
+  private seriesWins: Record<ScoreKey, number> = {};
+  private matchesPlayed = 0;
   isTiebreak = false;
   lastActivity = Date.now();
   closed = false;
@@ -199,14 +202,35 @@ export class Room {
       if (a !== 2 || b !== 2) return fail('teams-unbalanced');
     }
 
+    // First match in this room: the series tally starts here and then
+    // survives every later match.
+    this.seriesWins = {};
+    this.matchesPlayed = 0;
+    for (const key of this.scoreKeys()) this.seriesWins[key] = 0;
+    this.beginMatch();
+    return OK;
+  }
+
+  /** Host starts another match in the same room. Series wins carry over. */
+  playAgain(playerId: string): ActionResult {
+    this.touch();
+    if (playerId !== this.hostId) return fail('not-host');
+    if (this.phase !== 'match-result') return fail('wrong-phase');
+    // Starting a match with an absent seat would deal hands nobody can answer.
+    if (!this.players.every((p) => p.connected)) return fail('player-offline');
+    this.beginMatch();
+    return OK;
+  }
+
+  private beginMatch(): void {
     this.scores = {};
     for (const key of this.scoreKeys()) this.scores[key] = 0;
     this.hands = dealMatch();
     this.handIndex = -1;
     this.isTiebreak = false;
     this.matchResult = null;
+    this.lastResult = null;
     this.dealNextHand();
-    return OK;
   }
 
   // ------------------------------------------------------------- gameplay
@@ -309,25 +333,6 @@ export class Room {
     return OK;
   }
 
-  undo(playerId: string): ActionResult {
-    this.touch();
-    if (this.phase !== 'answering') return fail('wrong-phase');
-    if (playerId !== this.activePlayerId) return fail('not-your-turn');
-    if (this.answerSteps.length === 0) return fail('wrong-phase');
-
-    // Replay the remaining steps from scratch; undo never rewinds the clock.
-    this.answerSteps.pop();
-    let table = tableFromCards(this.currentCards);
-    for (const [i, s] of this.answerSteps.entries()) {
-      const r = applyCombine(table, s, this.rules, i);
-      if (!r.ok) break;
-      table = r.table;
-    }
-    this.table = table;
-    this.change();
-    return OK;
-  }
-
   private finishAttempt(correct: boolean): void {
     this.clearTimer();
     const buzzerId = this.activePlayerId;
@@ -400,9 +405,17 @@ export class Room {
   private finishMatch(): void {
     this.clearTimer();
     this.phase = 'match-result';
+    const winners = leaders(this.scores);
+    // Sudden death only ends once the tie at the top breaks, so there is
+    // normally exactly one winner. Awarding every leader keeps the tally
+    // honest if a match ever ends tied for another reason.
+    for (const key of winners) {
+      this.seriesWins[key] = (this.seriesWins[key] ?? 0) + 1;
+    }
+    this.matchesPlayed += 1;
     this.matchResult = {
       scores: this.scores,
-      winners: leaders(this.scores),
+      winners,
       wentToTiebreak: this.isTiebreak,
     };
     this.change();
@@ -564,6 +577,7 @@ export class Room {
         : null,
       lastResult: this.lastResult,
       matchResult: this.matchResult,
+      series: { wins: this.seriesWins, matchesPlayed: this.matchesPlayed },
       isTiebreak: this.isTiebreak,
     };
   }

@@ -47,7 +47,6 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
   const { game, state } = useTraining(rules);
   const isAnswering = state.phase === 'answering';
   const canAct = state.phase === 'open';
-  const combinesMade = state.cards.length - state.table.length;
 
   if (state.phase === 'done') {
     return (
@@ -88,8 +87,6 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
           table={state.table}
           interactive={isAnswering}
           onCombine={(step) => game.combine(step)}
-          onUndo={() => game.undo()}
-          canUndo={isAnswering && combinesMade > 0}
           errorNonce={state.combineError?.nonce ?? 0}
           errorMessage={state.combineError?.message ?? null}
         />

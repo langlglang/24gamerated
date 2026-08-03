@@ -135,8 +135,8 @@ io.on('connection', (socket) => {
     run('game:combine', (room, playerId) => room.combine(playerId, step));
   });
 
-  socket.on('game:undo', () => {
-    run('game:undo', (room, playerId) => room.undo(playerId));
+  socket.on('game:playAgain', () => {
+    run('game:playAgain', (room, playerId) => room.playAgain(playerId));
   });
 
   socket.on('room:leave', () => {

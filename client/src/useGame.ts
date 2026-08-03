@@ -48,6 +48,7 @@ const REJECTION_TEXT: Record<ActionRejection, string> = {
   'name-taken': 'That name is already taken in this room.',
   'wrong-player-count': 'The player count does not match the selected mode.',
   'teams-unbalanced': 'Teams must be 2 and 2.',
+  'player-offline': 'Everyone has to be connected to start another match.',
   'invalid-combine': 'That move is not legal.',
 };
 
@@ -65,7 +66,7 @@ export interface GameApi {
   buzz: () => void;
   callNoSolution: () => void;
   combine: (step: CombineStep) => void;
-  undo: () => void;
+  playAgain: () => void;
   leave: () => void;
   clearNotice: () => void;
 }
@@ -194,7 +195,7 @@ export function useGame(): GameApi {
       buzz: () => socket.emit('game:buzz'),
       callNoSolution: () => socket.emit('game:callNoSolution'),
       combine: (step) => socket.emit('game:combine', { step }),
-      undo: () => socket.emit('game:undo'),
+      playAgain: () => socket.emit('game:playAgain'),
       leave,
       clearNotice: () => setNotice(null),
     }),

@@ -191,19 +191,6 @@ export class TrainingGame {
     this.emit();
   }
 
-  undo(): void {
-    if (this.phase !== 'answering' || this.steps.length === 0) return;
-    this.steps.pop();
-    let table = tableFromCards(this.cards);
-    for (const [i, s] of this.steps.entries()) {
-      const r = applyCombine(table, s, this.rules, i);
-      if (!r.ok) break;
-      table = r.table;
-    }
-    this.table = table;
-    this.emit();
-  }
-
   private flagError(error: ValidationError): void {
     this.errorNonce += 1;
     this.combineError = { message: describeValidationError(error), nonce: this.errorNonce };

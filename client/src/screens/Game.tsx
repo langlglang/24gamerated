@@ -15,7 +15,7 @@ interface Props {
   onBuzz: () => void;
   onCallNoSolution: () => void;
   onCombine: (step: CombineStep) => void;
-  onUndo: () => void;
+  onPlayAgain: () => void;
   onLeave: () => void;
 }
 
@@ -26,7 +26,7 @@ export function Game({
   onBuzz,
   onCallNoSolution,
   onCombine,
-  onUndo,
+  onPlayAgain,
   onLeave,
 }: Props) {
   const me = state.players.find((p) => p.id === selfId) ?? null;
@@ -36,27 +36,67 @@ export function Game({
     state.players.find((p) => p.id === state.activePlayerId)?.name ?? 'Someone';
 
   const canAct = state.phase === 'open' && !!me && !me.lockedOut;
-  const combinesMade = state.cards.length - state.table.length;
+  const isHost = selfId === state.hostId;
+  const labelFor = (key: string) =>
+    state.mode === 'p4team'
+      ? `Team ${key}`
+      : (state.players.find((p) => p.id === key)?.name ?? key);
 
   if (state.phase === 'match-result' && state.matchResult) {
-    const { matchResult } = state;
-    const winnerNames = matchResult.winners.map((key) =>
-      state.mode === 'p4team'
-        ? `Team ${key}`
-        : (state.players.find((p) => p.id === key)?.name ?? key),
-    );
+    const { matchResult, series } = state;
+    const winnerNames = matchResult.winners.map(labelFor);
+    const everyoneHere = state.players.every((p) => p.connected);
+    // Order the series table by wins so the standings read at a glance.
+    const standings = Object.entries(series.wins).sort(([, a], [, b]) => b - a);
+
     return (
-      <div className="mx-auto flex w-full max-w-md flex-col justify-center gap-6 p-5">
+      <div className="mx-auto flex w-full max-w-md flex-col justify-center gap-5 p-5">
         <h1 className="text-center text-4xl font-black text-emerald-400">Match over</h1>
         <p className="text-center text-xl font-semibold">
           {winnerNames.length === 1 ? `${winnerNames[0]} wins` : `Tied: ${winnerNames.join(', ')}`}
         </p>
         {matchResult.wentToTiebreak && (
-          <p className="text-center text-xs text-slate-400">Decided in sudden death</p>
+          <p className="-mt-3 text-center text-xs text-slate-400">Decided in sudden death</p>
         )}
-        <Scoreboard state={state} selfId={selfId} />
-        <button type="button" className="btn-primary" onClick={onLeave}>
-          Back to home
+
+        <div>
+          <p className="mb-2 text-xs uppercase tracking-widest text-slate-500">This match</p>
+          <Scoreboard state={state} selfId={selfId} />
+        </div>
+
+        <div className="panel">
+          <p className="mb-2 text-xs uppercase tracking-widest text-slate-500">
+            Series · {series.matchesPlayed} {series.matchesPlayed === 1 ? 'match' : 'matches'} played
+          </p>
+          <ul className="space-y-1">
+            {standings.map(([key, wins]) => (
+              <li key={key} className="flex items-baseline justify-between">
+                <span className={key === selfId ? 'font-semibold text-emerald-400' : ''}>
+                  {labelFor(key)}
+                </span>
+                <span className="text-xl font-bold tabular-nums">{wins}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {isHost ? (
+          <button
+            type="button"
+            className="btn-primary text-lg"
+            disabled={!everyoneHere}
+            onClick={onPlayAgain}
+          >
+            {everyoneHere ? 'Play again' : 'Waiting for everyone to reconnect'}
+          </button>
+        ) : (
+          <p className="text-center text-sm text-slate-400">
+            Waiting for the host to start another match…
+          </p>
+        )}
+
+        <button type="button" className="btn-secondary" onClick={onLeave}>
+          Leave room
         </button>
       </div>
     );
@@ -65,7 +105,14 @@ export function Game({
   return (
     <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 p-4">
       <header className="flex items-baseline justify-between text-xs text-slate-400">
-        <span className="font-mono tracking-widest text-slate-300">{state.roomCode}</span>
+        <span className="font-mono tracking-widest text-slate-300">
+          {state.roomCode}
+          {state.series.matchesPlayed > 0 && (
+            <span className="ml-2 font-sans tracking-normal text-slate-500">
+              match {state.series.matchesPlayed + 1}
+            </span>
+          )}
+        </span>
         <span>
           {state.isTiebreak ? (
             <span className="font-semibold text-amber-400">Sudden death</span>
@@ -90,8 +137,6 @@ export function Game({
           table={state.table}
           interactive={isAnswering}
           onCombine={onCombine}
-          onUndo={onUndo}
-          canUndo={isAnswering && combinesMade > 0}
           errorNonce={combineError?.nonce ?? 0}
           errorMessage={combineError?.message ?? null}
         />

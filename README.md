@@ -7,6 +7,9 @@ A match is exactly one 52-card deck — **13 hands of 4 cards** — so no physic
 a match (four of the same rank can still land together, e.g. 7♠ 7♥ 7♦ 7♣). Ties at the top after
 hand 13 go to sudden-death hands from a freshly shuffled deck.
 
+When a match ends, **the room stays open**. The host can start another match with the same players,
+and the room keeps a running **series tally** of matches won across all of them.
+
 ---
 
 ## Quick start
@@ -96,8 +99,11 @@ That this matches the documented set for a 1–13 deck is a useful independent c
    to combine down to one card. Everyone else's input is locked while they answer.
 4. **Call No Solution** → correct if the hand genuinely has none; otherwise it costs them.
 5. A result overlay shows who scored and, when the hand was solvable, one valid solution.
-6. If nobody acts at all, a **60 s** hand clock expires and the hand is a wash — no points, solution
+6. If nobody acts at all, a **120 s** hand clock expires and the hand is a wash — no points, solution
    revealed, next hand. (Not in the original spec; added so an AFK player can't freeze a match.)
+
+There is no undo. Once two cards are combined the move stands, so a misclick costs you the hand —
+part of the pressure.
 
 ### Scoring
 
@@ -126,7 +132,7 @@ no-solution call accuracy.
 ## Architecture notes
 
 **The server is authoritative.** Deck, dealt cards, solver verdict, timers, buzz arbitration, and
-scoring all live server-side. Clients send intents (`buzz`, `callNoSolution`, `combine`, `undo`) and
+scoring all live server-side. Clients send intents (`buzz`, `callNoSolution`, `combine`) and
 render the state they're sent. The solver verdict for the live hand is never included in the state
 sent to clients — that would give away whether "no solution" is the right call.
 
@@ -152,6 +158,11 @@ reclaimed via the same room code (the client stores its player id in `localStora
 also gets the seat back). After the grace period the room closes. Dropping mid-answer is resolved as
 a failed attempt *before* pausing, so disconnecting is never a way to escape a bad buzz.
 
+**Matches are a series.** Finishing a match leaves the room in `match-result` with per-match scores
+reset but a `series.wins` tally that persists. The host's *Play again* reshuffles a fresh deck and
+deals hand 1; it is refused while any player is disconnected, since a match with an absent seat
+deals hands nobody can answer.
+
 Rooms are in-memory and ephemeral; idle ones are swept after 10 minutes.
 
 ---
@@ -164,7 +175,7 @@ Every tunable lives in `shared/src/constants.ts`:
 | --- | --- |
 | `BUZZ_START_TIMEOUT_MS` | 5 000 |
 | `ANSWER_TIMEOUT_MS` | 10 000 |
-| `HAND_IDLE_TIMEOUT_MS` | 60 000 |
+| `HAND_IDLE_TIMEOUT_MS` | 120 000 |
 | `HAND_RESULT_DISPLAY_MS` | 5 000 |
 | `RECONNECT_GRACE_MS` | 60 000 |
 | `ROOM_IDLE_TIMEOUT_MS` | 600 000 |
