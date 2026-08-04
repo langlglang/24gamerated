@@ -1,12 +1,20 @@
 import { useState } from 'react';
-import { MODE_PLAYER_COUNT, type GameMode, type RuleSet } from '@24game/shared';
+import {
+  MODE_PLAYER_COUNT,
+  type GameMode,
+  type PublicUserView,
+  type RuleSet,
+} from '@24game/shared';
 import { RuleToggles } from '../components/RuleToggles.js';
 
 interface Props {
   onCreate: (name: string, mode: GameMode, rules: RuleSet) => Promise<string | null>;
   onJoin: (name: string, code: string) => Promise<string | null>;
   onTraining: () => void;
+  onRanked: () => void;
   connected: boolean;
+  user: PublicUserView | null;
+  authLoading: boolean;
 }
 
 const MODES: { id: GameMode; label: string; blurb: string }[] = [
@@ -15,7 +23,15 @@ const MODES: { id: GameMode; label: string; blurb: string }[] = [
   { id: 'p4team', label: '4 players', blurb: '2 v 2 teams' },
 ];
 
-export function Home({ onCreate, onJoin, onTraining, connected }: Props) {
+export function Home({
+  onCreate,
+  onJoin,
+  onTraining,
+  onRanked,
+  connected,
+  user,
+  authLoading,
+}: Props) {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [mode, setMode] = useState<GameMode>('p2');
@@ -45,6 +61,39 @@ export function Home({ onCreate, onJoin, onTraining, connected }: Props) {
           Four cards. Plus, minus, times, divide. Make exactly 24.
         </p>
       </header>
+
+      {/* Rated play sits above guest play — it is the reason to have an account. */}
+      <button
+        type="button"
+        onClick={onRanked}
+        disabled={authLoading}
+        className="flex w-full items-center justify-between rounded-2xl border border-emerald-500/60 bg-emerald-500/10 px-4 py-4 text-left transition hover:bg-emerald-500/20 disabled:opacity-50"
+      >
+        <span>
+          <span className="block text-lg font-bold text-emerald-400">
+            {user ? 'Ranked' : 'Sign in to play ranked'}
+          </span>
+          <span className="block text-xs text-slate-400">
+            {user
+              ? 'Queue 1v1, or challenge a friend — both rated'
+              : 'Elo ratings, matchmaking, and friend challenges'}
+          </span>
+        </span>
+        {user && (
+          <span className="text-right">
+            <span className="block text-2xl font-black tabular-nums text-emerald-400">
+              {user.rating}
+            </span>
+            <span className="block text-[10px] uppercase text-slate-500">{user.username}</span>
+          </span>
+        )}
+      </button>
+
+      <div className="flex items-center gap-3 text-xs text-slate-600">
+        <span className="h-px flex-1 bg-slate-800" />
+        or play as a guest
+        <span className="h-px flex-1 bg-slate-800" />
+      </div>
 
       <input
         className="field text-center text-lg"

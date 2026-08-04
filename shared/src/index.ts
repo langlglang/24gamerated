@@ -6,5 +6,7 @@ export * from './combine.js';
 export * from './validator.js';
 export * from './solver.js';
 export * from './scoring.js';
+export * from './elo.js';
+export * from './rated.js';
 export * from './protocol.js';
 export * from './roomCode.js';

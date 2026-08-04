@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  RATED_REJECTION_TEXT,
   describeValidationError,
   type ActionRejection,
+  type ChallengeView,
   type CombineStep,
   type GameMode,
   type PublicGameState,
+  type PublicUserView,
+  type QueueStatusView,
+  type RatedKind,
+  type RatedResultView,
   type RuleSet,
   type TeamId,
 } from '@24game/shared';
@@ -69,9 +75,24 @@ export interface GameApi {
   playAgain: () => void;
   leave: () => void;
   clearNotice: () => void;
+
+  // ---- rated play ----
+  /** Live rating record, refreshed by the server after each rated match. */
+  profile: PublicUserView | null;
+  queue: QueueStatusView;
+  challenges: ChallengeView[];
+  ratedResult: RatedResultView | null;
+  matchFound: { roomCode: string; kind: RatedKind; opponent: { username: string; rating: number } } | null;
+  joinQueue: () => Promise<string | null>;
+  leaveQueue: () => void;
+  sendChallenge: (username: string) => Promise<string | null>;
+  respondChallenge: (id: string, accept: boolean) => Promise<string | null>;
+  dismissRatedResult: () => void;
 }
 
-export function useGame(): GameApi {
+const IDLE_QUEUE: QueueStatusView = { inQueue: false, waitingMs: 0, searching: 0, band: 0 };
+
+export function useGame(token: string | null): GameApi {
   const socketRef = useRef<GameSocket | null>(null);
   if (!socketRef.current) socketRef.current = createSocket();
   const socket = socketRef.current;
@@ -82,6 +103,12 @@ export function useGame(): GameApi {
   const [notice, setNotice] = useState<string | null>(null);
   const [combineError, setCombineError] = useState<{ message: string; nonce: number } | null>(null);
   const errorNonce = useRef(0);
+
+  const [profile, setProfile] = useState<PublicUserView | null>(null);
+  const [queue, setQueue] = useState<QueueStatusView>(IDLE_QUEUE);
+  const [challenges, setChallenges] = useState<ChallengeView[]>([]);
+  const [ratedResult, setRatedResult] = useState<RatedResultView | null>(null);
+  const [matchFound, setMatchFound] = useState<GameApi['matchFound']>(null);
 
   useEffect(() => {
     function onConnect() {
@@ -123,6 +150,29 @@ export function useGame(): GameApi {
       setPlayerId(null);
     });
 
+    socket.on('profile', setProfile);
+    socket.on('queueStatus', setQueue);
+    socket.on('challengeIncoming', (challenge) => {
+      setChallenges((prev) => [challenge, ...prev.filter((c) => c.id !== challenge.id)]);
+    });
+    socket.on('challengeUpdated', (challenge) => {
+      // Anything no longer pending leaves the inbox.
+      setChallenges((prev) => prev.filter((c) => c.id !== challenge.id));
+      if (challenge.status === 'declined') {
+        setNotice(`${challenge.toUsername} declined your challenge.`);
+      }
+    });
+    socket.on('ratedMatchFound', (payload) => {
+      // The server has already seated us; record who we are up against and
+      // clear any queue state so the UI stops showing "searching".
+      setMatchFound(payload);
+      setQueue(IDLE_QUEUE);
+      setChallenges([]);
+      setRatedResult(null);
+      saveSession(null);
+    });
+    socket.on('ratedResult', setRatedResult);
+
     if (socket.connected) onConnect();
 
     return () => {
@@ -132,6 +182,12 @@ export function useGame(): GameApi {
       socket.off('rejected');
       socket.off('combineRejected');
       socket.off('roomClosed');
+      socket.off('profile');
+      socket.off('queueStatus');
+      socket.off('challengeIncoming');
+      socket.off('challengeUpdated');
+      socket.off('ratedMatchFound');
+      socket.off('ratedResult');
     };
   }, [socket]);
 
@@ -178,7 +234,61 @@ export function useGame(): GameApi {
     saveSession(null);
     setState(null);
     setPlayerId(null);
+    setMatchFound(null);
   }, [socket]);
+
+  // Bind the signed-in identity to this socket whenever the token changes, and
+  // re-bind on reconnect so a dropped connection does not silently sign out.
+  useEffect(() => {
+    if (!token) {
+      socket.emit('auth:signOut');
+      setProfile(null);
+      setQueue(IDLE_QUEUE);
+      setChallenges([]);
+      return;
+    }
+    const identify = () => {
+      socket.emit('auth:identify', { token }, (res) => {
+        if (res.ok) setProfile(res.user);
+      });
+    };
+    identify();
+    socket.on('connect', identify);
+    return () => {
+      socket.off('connect', identify);
+    };
+  }, [socket, token]);
+
+  const joinQueue = useCallback(
+    () =>
+      new Promise<string | null>((resolve) => {
+        socket.emit('queue:join', (res) => {
+          resolve(res.ok ? null : RATED_REJECTION_TEXT[res.error]);
+        });
+      }),
+    [socket],
+  );
+
+  const sendChallenge = useCallback(
+    (username: string) =>
+      new Promise<string | null>((resolve) => {
+        socket.emit('challenge:send', { username }, (res) => {
+          resolve(res.ok ? null : RATED_REJECTION_TEXT[res.error]);
+        });
+      }),
+    [socket],
+  );
+
+  const respondChallenge = useCallback(
+    (id: string, accept: boolean) =>
+      new Promise<string | null>((resolve) => {
+        setChallenges((prev) => prev.filter((c) => c.id !== id));
+        socket.emit('challenge:respond', { id, accept }, (res) => {
+          resolve(res.ok ? null : RATED_REJECTION_TEXT[res.error]);
+        });
+      }),
+    [socket],
+  );
 
   return useMemo<GameApi>(
     () => ({
@@ -198,7 +308,36 @@ export function useGame(): GameApi {
       playAgain: () => socket.emit('game:playAgain'),
       leave,
       clearNotice: () => setNotice(null),
+
+      profile,
+      queue,
+      challenges,
+      ratedResult,
+      matchFound,
+      joinQueue,
+      leaveQueue: () => socket.emit('queue:leave'),
+      sendChallenge,
+      respondChallenge,
+      dismissRatedResult: () => setRatedResult(null),
     }),
-    [connected, state, playerId, notice, combineError, createRoom, joinRoom, leave, socket],
+    [
+      connected,
+      state,
+      playerId,
+      notice,
+      combineError,
+      createRoom,
+      joinRoom,
+      leave,
+      socket,
+      profile,
+      queue,
+      challenges,
+      ratedResult,
+      matchFound,
+      joinQueue,
+      sendChallenge,
+      respondChallenge,
+    ],
   );
 }

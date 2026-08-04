@@ -1,4 +1,12 @@
 import type { Card } from './cards.js';
+import type {
+  ChallengeView,
+  PublicUserView,
+  QueueStatusView,
+  RatedKind,
+  RatedRejection,
+  RatedResultView,
+} from './rated.js';
 import type { ScoreKey } from './scoring.js';
 import type { CombineStep, GameMode, RuleSet, TableCard, TeamId } from './types.js';
 import type { ValidationError } from './validator.js';
@@ -84,6 +92,8 @@ export interface PublicGameState {
   readonly matchResult: MatchResultView | null;
   /** Survives across matches — the room keeps playing until everyone leaves. */
   readonly series: SeriesView;
+  /** Rated rooms are 1v1, fixed-rules, single-match, and move Elo. */
+  readonly rated: RatedKind | null;
   /** True during sudden-death hands after a tied 13. */
   readonly isTiebreak: boolean;
 }
@@ -122,6 +132,26 @@ export interface ClientToServerEvents {
   'game:combine': (payload: { step: CombineStep }) => void;
   /** Host starts another match in the same room, keeping the series tally. */
   'game:playAgain': () => void;
+
+  // ---- rated play (all require a signed-in socket) ----
+
+  /** Attach a signed-in identity to this socket. Also sent on reconnect. */
+  'auth:identify': (
+    payload: { token: string },
+    ack: (res: { ok: true; user: PublicUserView } | { ok: false; error: RatedRejection }) => void,
+  ) => void;
+  'auth:signOut': () => void;
+  'queue:join': (ack: (res: { ok: true } | { ok: false; error: RatedRejection }) => void) => void;
+  'queue:leave': () => void;
+  'challenge:send': (
+    payload: { username: string },
+    ack: (res: { ok: true; challenge: ChallengeView } | { ok: false; error: RatedRejection }) => void,
+  ) => void;
+  'challenge:respond': (
+    payload: { id: string; accept: boolean },
+    ack: (res: { ok: true } | { ok: false; error: RatedRejection }) => void,
+  ) => void;
+  'challenge:cancel': (payload: { id: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -130,4 +160,20 @@ export interface ServerToClientEvents {
   /** An illegal combine attempt — client flashes the error, clock keeps running. */
   combineRejected: (payload: { error: ValidationError }) => void;
   roomClosed: (payload: { reason: string }) => void;
+
+  // ---- rated play ----
+
+  /** The signed-in player's own record, refreshed after every rated match. */
+  profile: (user: PublicUserView | null) => void;
+  queueStatus: (status: QueueStatusView) => void;
+  /** Matchmaker or an accepted challenge produced a game; the client joins it. */
+  ratedMatchFound: (payload: {
+    roomCode: string;
+    kind: RatedKind;
+    opponent: { username: string; rating: number };
+  }) => void;
+  /** Rating movement, sent once the match has been recorded. */
+  ratedResult: (result: RatedResultView) => void;
+  challengeIncoming: (challenge: ChallengeView) => void;
+  challengeUpdated: (challenge: ChallengeView) => void;
 }

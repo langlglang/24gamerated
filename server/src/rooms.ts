@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
+  RATED_RULES,
   ROOM_IDLE_TIMEOUT_MS,
   generateRoomCode,
   normalizeRoomCode,
   type GameMode,
+  type RatedKind,
   type RuleSet,
 } from '@24game/shared';
 import { Room, type RoomEvents } from './room.js';
@@ -44,6 +46,45 @@ export class RoomManager {
     });
     this.rooms.set(code, room);
     return { room, playerId };
+  }
+
+  /**
+   * A rated 1v1, seated and ready to start. Player ids ARE user ids here, so
+   * a reconnect lands the right account back in the right seat, and the rating
+   * layer needs no extra mapping.
+   */
+  createRated(
+    a: { userId: string; username: string; socketId: string },
+    b: { userId: string; username: string; socketId: string },
+    kind: RatedKind,
+  ): Room {
+    const code = this.uniqueCode();
+    const room = new Room(
+      code,
+      { id: a.userId, name: a.username, socketId: a.socketId },
+      'p2',
+      RATED_RULES,
+      {
+        ...this.events,
+        onClosed: (r, reason) => {
+          this.rooms.delete(r.code);
+          this.events.onClosed(r, reason);
+        },
+      },
+      kind,
+    );
+    const joined = room.join({ id: b.userId, name: b.username, socketId: b.socketId });
+    if (!joined.ok) throw new Error(`could not seat rated opponent: ${joined.error}`);
+    this.rooms.set(code, room);
+    return room;
+  }
+
+  /** The room a given user is currently seated in, if any. */
+  findByPlayer(playerId: string): Room | undefined {
+    for (const room of this.rooms.values()) {
+      if (room.players.some((p) => p.id === playerId)) return room;
+    }
+    return undefined;
   }
 
   get(code: string): Room | undefined {

@@ -29,6 +29,7 @@ import {
   type Phase,
   type PlayerView,
   type PublicGameState,
+  type RatedKind,
   type RuleSet,
   type ScoreKey,
   type SolveResult,
@@ -62,7 +63,22 @@ export type RoomEvents = {
   onCombineRejected: (room: Room, playerId: string, error: ValidationError) => void;
   /** Room is finished and should be torn down. */
   onClosed: (room: Room, reason: string) => void;
+  /**
+   * A rated match finished. Only fired for rated rooms; the handler persists
+   * the result and moves both ratings.
+   */
+  onRatedMatchComplete?: (room: Room, result: RatedMatchOutcome) => void;
 };
+
+/** Everything the rating layer needs, with no database types leaking in here. */
+export interface RatedMatchOutcome {
+  kind: RatedKind;
+  playerAId: string;
+  playerBId: string;
+  scoreA: number;
+  scoreB: number;
+  wentToTiebreak: boolean;
+}
 
 export type ActionResult = { ok: true } | { ok: false; error: ActionRejection };
 
@@ -114,6 +130,8 @@ export class Room {
     mode: GameMode,
     rules: RuleSet,
     private readonly events: RoomEvents,
+    /** Non-null makes this a rated 1v1: fixed rules, one match, Elo at stake. */
+    readonly rated: RatedKind | null = null,
   ) {
     this.code = code;
     this.hostId = host.id;
@@ -216,6 +234,9 @@ export class Room {
     this.touch();
     if (playerId !== this.hostId) return fail('not-host');
     if (this.phase !== 'match-result') return fail('wrong-phase');
+    // A rated room is one match. Another rated game means requeuing or a
+    // fresh challenge, so both players consent to putting their rating up.
+    if (this.rated) return fail('wrong-phase');
     // Starting a match with an absent seat would deal hands nobody can answer.
     if (!this.players.every((p) => p.connected)) return fail('player-offline');
     this.beginMatch();
@@ -418,6 +439,22 @@ export class Room {
       winners,
       wentToTiebreak: this.isTiebreak,
     };
+
+    if (this.rated) {
+      // Rated rooms are always exactly two players, seated in join order.
+      const [a, b] = this.players;
+      if (a && b) {
+        this.events.onRatedMatchComplete?.(this, {
+          kind: this.rated,
+          playerAId: a.id,
+          playerBId: b.id,
+          scoreA: this.scores[a.id] ?? 0,
+          scoreB: this.scores[b.id] ?? 0,
+          wentToTiebreak: this.isTiebreak,
+        });
+      }
+    }
+
     this.change();
   }
 
@@ -578,6 +615,7 @@ export class Room {
       lastResult: this.lastResult,
       matchResult: this.matchResult,
       series: { wins: this.seriesWins, matchesPlayed: this.matchesPlayed },
+      rated: this.rated,
       isTiebreak: this.isTiebreak,
     };
   }

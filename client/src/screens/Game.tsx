@@ -1,7 +1,9 @@
 import {
   describeRules,
+  formatDelta,
   type CombineStep,
   type PublicGameState,
+  type RatedResultView,
 } from '@24game/shared';
 import { CombineBoard } from '../components/CombineBoard.js';
 import { CountdownBar } from '../components/Countdown.js';
@@ -12,6 +14,9 @@ interface Props {
   state: PublicGameState;
   selfId: string | null;
   combineError: { message: string; nonce: number } | null;
+  /** Present only once a rated match has been recorded. */
+  ratedResult: RatedResultView | null;
+  opponent: { username: string; rating: number } | null;
   onBuzz: () => void;
   onCallNoSolution: () => void;
   onCombine: (step: CombineStep) => void;
@@ -23,6 +28,8 @@ export function Game({
   state,
   selfId,
   combineError,
+  ratedResult,
+  opponent,
   onBuzz,
   onCallNoSolution,
   onCombine,
@@ -41,6 +48,59 @@ export function Game({
     state.mode === 'p4team'
       ? `Team ${key}`
       : (state.players.find((p) => p.id === key)?.name ?? key);
+
+  if (state.phase === 'match-result' && state.matchResult && state.rated) {
+    // Rated matches are one-and-done: no series, no rematch button. What
+    // matters is what happened to the rating.
+    const { matchResult } = state;
+    const won = matchResult.winners.some((key) => key === selfId);
+    return (
+      <div className="mx-auto flex w-full max-w-md flex-col justify-center gap-5 p-5">
+        <p className="text-center text-xs uppercase tracking-widest text-amber-400">
+          {state.rated === 'ranked' ? 'Ranked match' : 'Rated challenge'}
+        </p>
+        <h1
+          className={`text-center text-5xl font-black ${won ? 'text-emerald-400' : 'text-rose-400'}`}
+        >
+          {won ? 'You win' : 'You lose'}
+        </h1>
+        {matchResult.wentToTiebreak && (
+          <p className="-mt-3 text-center text-xs text-slate-400">Decided in sudden death</p>
+        )}
+
+        <Scoreboard state={state} selfId={selfId} />
+
+        {ratedResult ? (
+          <div className="panel space-y-3 text-center">
+            <p className="text-xs uppercase tracking-widest text-slate-500">Rating</p>
+            <p className="flex items-baseline justify-center gap-3">
+              <span className="text-2xl text-slate-400 line-through">{ratedResult.you.before}</span>
+              <span className="text-5xl font-black tabular-nums text-emerald-400">
+                {ratedResult.you.after}
+              </span>
+              <span
+                className={`text-2xl font-bold tabular-nums ${
+                  ratedResult.you.delta >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                }`}
+              >
+                {formatDelta(ratedResult.you.delta)}
+              </span>
+            </p>
+            <p className="text-xs text-slate-500">
+              {ratedResult.opponent.username}: {ratedResult.opponent.before} →{' '}
+              {ratedResult.opponent.after} ({formatDelta(ratedResult.opponent.delta)})
+            </p>
+          </div>
+        ) : (
+          <p className="text-center text-sm text-slate-400">Recording your rating…</p>
+        )}
+
+        <button type="button" className="btn-primary" onClick={onLeave}>
+          Back to home
+        </button>
+      </div>
+    );
+  }
 
   if (state.phase === 'match-result' && state.matchResult) {
     const { matchResult, series } = state;
@@ -106,8 +166,14 @@ export function Game({
     <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 p-4">
       <header className="flex items-baseline justify-between text-xs text-slate-400">
         <span className="font-mono tracking-widest text-slate-300">
-          {state.roomCode}
-          {state.series.matchesPlayed > 0 && (
+          {state.rated ? (
+            <span className="font-sans font-bold tracking-normal text-amber-400">
+              RATED{opponent && ` · vs ${opponent.username} (${opponent.rating})`}
+            </span>
+          ) : (
+            state.roomCode
+          )}
+          {!state.rated && state.series.matchesPlayed > 0 && (
             <span className="ml-2 font-sans tracking-normal text-slate-500">
               match {state.series.matchesPlayed + 1}
             </span>

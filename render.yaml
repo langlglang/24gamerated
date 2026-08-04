@@ -1,18 +1,23 @@
 # Render Blueprint. In the Render dashboard: New > Blueprint, point it at this
 # repo, and it reads this file instead of you filling in a form.
 #
-# Two things here are load-bearing and easy to get wrong by hand:
+# Three things here are load-bearing and easy to get wrong by hand:
 #
 #   1. `npm ci --include=dev` — NODE_ENV=production makes npm skip
 #      devDependencies, which is where typescript and vite live. Without the
 #      flag the build fails with "vite: not found".
 #
-#   2. One instance, always. Rooms are in-memory, so a second instance would
-#      serve players who cannot see each other. Never raise numInstances and
-#      never enable autoscaling for this service.
+#   2. One instance, always. Live rooms and the matchmaking queue are in
+#      memory, so a second instance would serve players who cannot see each
+#      other. Never raise numInstances and never enable autoscaling.
+#      (Accounts, ratings, and match history are in Postgres and are safe.)
+#
+#   3. DATABASE_URL and JWT_SECRET are marked sync:false, so Render prompts for
+#      them at deploy time instead of them living in this file. Never commit
+#      either one.
 services:
   - type: web
-    name: 24gameonline
+    name: 24gamerated
     runtime: node
     plan: free
     buildCommand: npm ci --include=dev && npm run build
@@ -23,3 +28,11 @@ services:
         value: production
       - key: NODE_VERSION
         value: '22'
+      # Postgres connection string, e.g. from Neon. Without it the service
+      # still runs, but only guest rooms and training — no accounts or Elo.
+      - key: DATABASE_URL
+        sync: false
+      # Signs session tokens. 16+ characters, required in production.
+      # Render can generate one for you.
+      - key: JWT_SECRET
+        generateValue: true

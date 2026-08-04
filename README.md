@@ -1,7 +1,15 @@
-# 24 Online
+# 24 Rated
 
 Real-time multiplayer **24**: four cards, combine them with `+ − × ÷` using each exactly once to
-make 24. Room-code matchmaking, four game modes, and a solo training arena.
+make 24. Accounts with **Elo ratings**, 1v1 **ranked matchmaking**, and **rated friend challenges** —
+on top of the original guest room-code game, four game modes, and a solo training arena.
+
+> Built on top of [24gameonline](https://github.com/langlglang/24gameonline), which stays as the
+> unrated game. That repo is still `upstream` here, so fixes can flow forward.
+>
+> **Everything unrated still works exactly as before** — guest rooms need no account and no
+> database. If `DATABASE_URL` is unset the server runs guest-only and simply hides the rated
+> surface, rather than failing.
 
 A match is exactly one 52-card deck — **13 hands of 4 cards** — so no physical card repeats within
 a match (four of the same rank can still land together, e.g. 7♠ 7♥ 7♦ 7♣). Ties at the top after
@@ -18,7 +26,19 @@ Requires Node 20+ (developed on Node 24).
 
 ```bash
 npm install
+cp .env.example .env      # then fill in DATABASE_URL and JWT_SECRET
 npm run dev
+```
+
+**`.env` is optional.** Without it you get the full guest game — rooms, all four modes, training —
+just no accounts, ratings, or matchmaking. With it, migrations run automatically on boot and the
+rated surface switches on.
+
+Get a free Postgres connection string from [Neon](https://neon.tech) (no card, no expiry). Generate
+a secret with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 `npm run dev` builds the shared package, then runs the API on **:3000** and Vite on **:5173**.
@@ -31,26 +51,73 @@ To play across devices on your LAN, run `npm run build && npm start` and hit `ht
 
 | Command | What it does |
 | --- | --- |
-| `npm test` | Unit tests for the solver, validator, rationals, and scoring |
+| `npm test` | Unit tests for the solver, validator, rationals, scoring, and Elo |
 | `npm run build` | Builds shared → client → server |
 | `npm start` | Runs the built server, which also serves the built client |
-| `npm run smoke` | End-to-end check against a running server (see below) |
+| `npm run migrate` | Applies database migrations (the server also does this on boot) |
+| `npm run smoke` | End-to-end check of guest play against a running server |
+| `npm run smoke -- --rated` / `node scripts/smoke-rated.mjs` | End-to-end check of the rated surface |
 | `npm run typecheck` | Typechecks every workspace |
+
+---
+
+## Rated play
+
+Sign in, and three things unlock. Everything rated is **1v1 only**.
+
+**Ranked queue.** Press *Play ranked* and the matchmaker looks for someone within ±100 rating. The
+window widens by 50 every 5 seconds up to ±1200, and **both** players must find the gap acceptable —
+so a fresh arrival is never dragged into a lopsided game just because someone else has waited a long
+time. A quiet queue still matches eventually.
+
+**Friend challenges.** Type a username, they get an invite. Accepting starts a rated match
+immediately. Challenges are rated exactly like ranked games; they just skip the queue. The target
+has to be online, and unanswered invites expire after 10 minutes.
+
+**Ratings.** Standard Elo, starting at **1200**:
+
+| | |
+| --- | --- |
+| First 30 games | K=40 — provisional, rating moves fast while it settles |
+| After that | K=24 |
+| Rating ≥ 2400 | K=16 — slower churn at the top |
+| Floor | 100 — a losing streak cannot spiral forever |
+
+A decided game always moves the rating by at least 1 point (rounding is away from zero), and the
+exchange is zero-sum: what the winner gains, the loser loses. Both sides are computed from the
+ratings held *before* the match, so order of processing cannot change the outcome.
+
+### Rated matches use one fixed ruleset
+
+Rated play is always **fractions ON, negatives ON**. Ratings earned under easier and harder rulesets
+are not the same skill, so a single pool keeps the number meaningful. Guest rooms keep the full rule
+toggles.
+
+### A rated match is one match
+
+No rematch button. Another rated game means requeuing or a fresh challenge — so both players
+consent to putting their rating up again. The series tally is a guest-room feature.
 
 ---
 
 ## Layout
 
 ```
-shared/    deck, exact-rational arithmetic, solver, validator, scoring, wire protocol
-server/    Socket.IO server, room registry, authoritative game state machine
-client/    React + Vite + Tailwind UI, plus the offline training arena
-scripts/   end-to-end smoke test
+shared/         deck, exact-rational arithmetic, solver, validator, scoring,
+                Elo, wire protocol
+server/
+  db/           Postgres pool, embedded migrations, users/matches/challenges
+  auth/         bcrypt hashing, JWT sessions, REST routes
+  room.ts       authoritative game state machine (rated and unrated)
+  matchmaking.ts  rating-banded queue
+client/         React + Vite + Tailwind UI, plus the offline training arena
+scripts/        end-to-end smoke tests (guest and rated)
 ```
 
 `shared/` is the single source of truth for game rules. The server imports it, and so does the
 training arena — so solo practice and a real match can never disagree about what counts as a legal
-move.
+move. Elo lives there too, kept pure and dependency-free so it can be tested exhaustively without a
+database.
 
 ---
 
@@ -165,6 +232,34 @@ deals hands nobody can answer.
 
 Rooms are in-memory and ephemeral; idle ones are swept after 10 minutes.
 
+### Rated internals
+
+**Ratings are computed from pre-match values.** `recordRatedMatch` takes both players' rows as read
+at the end of the match and writes the match row plus both rating updates in **one transaction**, so
+a crash cannot record a game without moving the ratings, or vice versa.
+
+**Recording a rated match never affects the game.** The match has already finished correctly by the
+time the rating layer runs, so persistence failures are logged and swallowed rather than thrown.
+Players see "Recording your rating…" instead of a broken result screen.
+
+**In rated rooms, seat id = user id.** No extra mapping, and a reconnect lands the right account
+back in the right seat.
+
+**Sessions are stateless JWTs**, presented on REST calls via `Authorization` and on the socket
+handshake via `auth.token`, so both transports agree on who you are. The tradeoff: a token cannot be
+revoked before it expires. Fine for a game leaderboard; anything touching payments would want
+server-side sessions.
+
+**Passwords** are bcrypt at cost 10. Login failures return one message whether the account exists or
+not, so the endpoint cannot be used to enumerate accounts, and repeated failures are throttled per
+IP + identifier.
+
+**Case-insensitive uniqueness for email and username is enforced by unique indexes**, not by app
+code, so two simultaneous signups cannot both succeed.
+
+The queue is in memory like rooms. Accounts, ratings, and match history are in Postgres and survive
+restarts, redeploys, and sleep.
+
 ---
 
 ## Configuration
@@ -182,30 +277,45 @@ Every tunable lives in `shared/src/constants.ts`:
 | `HANDS_PER_MATCH` | 13 |
 | `ROOM_CODE_LENGTH` / `ROOM_CODE_ALPHABET` | 6 / no `O`,`0`,`I`,`1` |
 
-Server env vars: `PORT` (default 3000), `NODE_ENV`, `DEV_CLIENT_ORIGIN`.
+Elo constants live in `shared/src/elo.ts` (`STARTING_RATING`, `PROVISIONAL_GAMES`, the three
+K-factors, `RATING_FLOOR`); matchmaking bands live in `server/src/matchmaking.ts`.
+
+| Env var | Required? | What it does |
+| --- | --- | --- |
+| `DATABASE_URL` | For rated play | Postgres connection string. Unset ⇒ guest-only mode. |
+| `JWT_SECRET` | **In production** | Signs session tokens; 16+ chars. Dev generates a throwaway. |
+| `PORT` | No | Defaults to 3000. |
+| `NODE_ENV` | No | `production` tightens CORS and requires `JWT_SECRET`. |
+| `DEV_CLIENT_ORIGIN` | No | Vite origin allowed in dev. |
 
 ---
 
 ## Testing
 
 ```bash
-npm test          # 52 unit tests
-npm run smoke     # end-to-end, needs a server running
+npm test                        # 72 unit tests
+npm run build && npm start      # terminal 1
+npm run smoke                   # terminal 2 — guest play
+node scripts/smoke-rated.mjs    # terminal 2 — rated play (needs DATABASE_URL)
 ```
 
 Unit tests cover exact rational arithmetic, the solver under **all four rule combinations**, the
 validator's rejection paths (division by zero, non-integer with fractions OFF, negative with
-negatives OFF, reused card, unknown card, wrong step count, complete-but-not-24), and every
-3-player scoring edge case including the 0.5/0.5 split.
+negatives OFF, reused card, unknown card, wrong step count, complete-but-not-24), every 3-player
+scoring edge case including the 0.5/0.5 split, and Elo — symmetry, zero-sum exchange, K-factor
+tiers, the rating floor, order independence, and that a long series stays bounded.
 
-The smoke test drives two real socket clients through create → join → start → buzz → solve, and
+**`npm run smoke`** drives two socket clients through create → join → start → buzz → solve, and
 asserts the round locks to the buzzer, a second buzz is refused, the score moves, and the solver
-verdict is not leaked in the state payload:
+verdict is not leaked in the state payload. It passes with `DATABASE_URL` unset, which is how
+guest-only mode stays honest.
 
-```bash
-npm run build && npm start      # terminal 1
-npm run smoke                   # terminal 2
-```
+**`scripts/smoke-rated.mjs`** registers throwaway accounts and checks the rated path end to end:
+duplicate usernames rejected, wrong passwords rejected, match history requires a token, a friend
+challenge reaches the target and starts a match, the matchmaker pairs two queued players, a full
+13-hand ranked match runs, and the resulting Elo change is non-zero, zero-sum, correctly signed, and
+written through to `/api/auth/me`, match history, and the leaderboard. It leaves its test accounts
+behind on purpose.
 
 ---
 
@@ -224,17 +334,23 @@ everywhere:
 
 - **`--include=dev` at install time.** With `NODE_ENV=production` set, npm skips devDependencies —
   which is where `typescript` and `vite` live — and the build dies with `vite: not found`.
-- **Exactly one instance.** Rooms are in-memory, so a second instance would serve players who
-  cannot see each other. No autoscaling. Scaling out means adding sticky sessions plus a shared
-  room store first.
+- **Exactly one instance.** Live rooms and the matchmaking queue are in-memory, so a second instance
+  would serve players who cannot see each other. No autoscaling. Scaling out means adding sticky
+  sessions plus a shared room/queue store first. (Accounts, ratings, and history are in Postgres and
+  are safe either way.)
+- **Set `JWT_SECRET`.** The server refuses to start signing tokens without it in production.
 
 ### Render
 
 `render.yaml` in the repo root is a Blueprint, so there is no form to fill in:
 
-1. Push to GitHub.
-2. Render dashboard → **New → Blueprint** → pick the repo → **Apply**.
-3. Wait for the first build, then open the `*.onrender.com` URL.
+1. Create a free Postgres database at [Neon](https://neon.tech) and copy the connection string.
+2. Push to GitHub.
+3. Render dashboard → **New → Blueprint** → pick the repo → **Apply**.
+4. Render prompts for **`DATABASE_URL`** — paste the Neon string. It generates `JWT_SECRET` itself.
+5. Wait for the first build, then open the `*.onrender.com` URL.
+
+Migrations run automatically on boot, so there is no separate deploy step for the schema.
 
 Every later `git push` to `main` redeploys automatically.
 
@@ -250,5 +366,19 @@ Render injects `PORT`; the server already reads it.
 
 - **Resume after a pause** returns the hand to open play with a fresh idle clock rather than
   restoring the exact remaining time.
-- No spectator seats beyond the players in the room, no bots or substitutes for dropped players,
-  and no persistence — all deliberate, per the spec.
+- No spectator seats beyond the players in the room, and no bots or substitutes for dropped players.
+
+### Rated play specifically
+
+- **Abandoning a rated match does not forfeit it.** Dropping mid-answer costs that hand, and after
+  the reconnect grace the room closes — but with no `match-result` there is no Elo change either, so
+  a player losing badly can currently rage-quit to avoid the loss. Fixing it properly means deciding
+  what an abandonment is worth, which is a game-design call rather than a bug.
+- **Sessions cannot be revoked** before their 30-day expiry, since they are stateless JWTs.
+- **No password reset.** Emails are collected so it can be added, but there is no mail service
+  wired up, so a forgotten password currently needs a new account.
+- **No email verification**, so signups are not proof of a real address.
+- **The queue is per-instance.** Two instances would maintain two separate queues that never see
+  each other — another reason for the single-instance rule.
+- **Ranked is 1v1 only.** Rated 3-player and team play would each need their own rating pool and a
+  different rating model; the Elo here assumes two sides.

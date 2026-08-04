@@ -1,9 +1,9 @@
 {
-  "name": "24gameonline",
+  "name": "24gamerated",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Real-time online multiplayer 24 card game with room codes, multiple modes, and a solo training arena.",
+  "description": "Real-time multiplayer 24 card game with accounts, Elo-rated 1v1 matchmaking, friend challenges, guest rooms, and a solo training arena.",
   "workspaces": [
     "shared",
     "server",
@@ -20,6 +20,7 @@
     "start": "node server/dist/index.js",
     "test": "npm run test --workspace=shared",
     "smoke": "node scripts/smoke.mjs",
+    "migrate": "npm run build:shared && npm run build:server && npm run migrate --workspace=server",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
