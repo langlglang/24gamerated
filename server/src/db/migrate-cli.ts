@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../env.js';
 import { runMigrations } from './migrate.js';
 import { closePool, isDatabaseConfigured } from './pool.js';
 

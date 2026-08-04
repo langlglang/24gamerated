@@ -141,6 +141,21 @@ async function main() {
   const aliceSocket = await connect(alice.token);
   const bobSocket = await connect(bob.token);
 
+  // Alice calls "no solution" every hand: fast and deterministic. She will
+  // usually be wrong, which is exactly what we want to see in the rating.
+  //
+  // This listener has to be attached BEFORE queueing. The server deals hand 1
+  // the instant the pair is made, so attaching afterwards misses that state
+  // and the hand sits until the 120s idle clock expires.
+  let handsSeen = 0;
+  const onState = (state) => {
+    if (state.phase === 'open') {
+      handsSeen++;
+      aliceSocket.emit('game:callNoSolution');
+    }
+  };
+  aliceSocket.on('state', onState);
+
   const aliceFound = waitFor(aliceSocket, 'ratedMatchFound');
   const bobFound = waitFor(bobSocket, 'ratedMatchFound');
   const q1 = await emit(aliceSocket, 'queue:join');
@@ -154,18 +169,7 @@ async function main() {
   const dupQueue = await emit(aliceSocket, 'queue:join');
   check('you cannot queue while already in a match', dupQueue.ok === false, dupQueue.error);
 
-  // Alice calls "no solution" every hand: fast and deterministic. She will
-  // usually lose, which is exactly what we want to observe in the rating.
-  let handsSeen = 0;
-  const onState = (state) => {
-    if (state.phase === 'open') {
-      handsSeen++;
-      aliceSocket.emit('game:callNoSolution');
-    }
-  };
-  aliceSocket.on('state', onState);
-
-  const aliceResult = await waitFor(aliceSocket, 'ratedResult', () => true, 180_000, 'rated result');
+  const aliceResult = await waitFor(aliceSocket, 'ratedResult', () => true, 240_000, 'rated result');
   const bobResult = await waitFor(bobSocket, 'ratedResult', () => true, 10_000, 'opponent result');
   aliceSocket.off('state', onState);
 
