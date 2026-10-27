@@ -169,8 +169,13 @@ async function main() {
   const dupQueue = await emit(aliceSocket, 'queue:join');
   check('you cannot queue while already in a match', dupQueue.ok === false, dupQueue.error);
 
-  const aliceResult = await waitFor(aliceSocket, 'ratedResult', () => true, 240_000, 'rated result');
-  const bobResult = await waitFor(bobSocket, 'ratedResult', () => true, 10_000, 'opponent result');
+  // Both results are sent in the same tick, so listen for both before either
+  // arrives — waiting for Bob only after Alice's lands misses his on a real
+  // network.
+  const [aliceResult, bobResult] = await Promise.all([
+    waitFor(aliceSocket, 'ratedResult', () => true, 240_000, 'rated result'),
+    waitFor(bobSocket, 'ratedResult', () => true, 240_000, 'opponent result'),
+  ]);
   aliceSocket.off('state', onState);
 
   check('the match ran a full deck', handsSeen >= 13, `${handsSeen} hands`);
