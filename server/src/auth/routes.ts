@@ -47,7 +47,16 @@ export async function requireAuth(
     res.status(401).json({ error: 'Sign in to do that.' });
     return;
   }
-  const user = await findById(claims.userId);
+  // Express 4 does not catch rejected promises, so a database error here
+  // would otherwise be an unhandled rejection that kills the process.
+  let user: UserRow | null;
+  try {
+    user = await findById(claims.userId);
+  } catch (err) {
+    console.error('[auth] account lookup failed:', err);
+    res.status(503).json({ error: 'Accounts are temporarily unavailable. Try again shortly.' });
+    return;
+  }
   if (!user) {
     res.status(401).json({ error: 'That account no longer exists.' });
     return;
@@ -128,21 +137,26 @@ export function createAuthRouter(): express.Router {
       return;
     }
 
-    // Accept either an email or a username in the same box.
-    const user = identifier.includes('@')
-      ? await findByEmail(identifier)
-      : await findByUsername(identifier);
+    try {
+      // Accept either an email or a username in the same box.
+      const user = identifier.includes('@')
+        ? await findByEmail(identifier)
+        : await findByUsername(identifier);
 
-    // Same message either way, so this cannot be used to enumerate accounts.
-    const ok = user ? await verifyPassword(password, user.password_hash) : false;
-    if (!user || !ok) {
-      res.status(401).json({ error: 'Wrong email/username or password.' });
-      return;
+      // Same message either way, so this cannot be used to enumerate accounts.
+      const ok = user ? await verifyPassword(password, user.password_hash) : false;
+      if (!user || !ok) {
+        res.status(401).json({ error: 'Wrong email/username or password.' });
+        return;
+      }
+
+      clearThrottle(key);
+      await touchLastSeen(user.id);
+      res.json({ token: issueToken({ userId: user.id, username: user.username }), user: toPublicUser(user) });
+    } catch (err) {
+      console.error('[auth] login failed:', err);
+      res.status(503).json({ error: 'Accounts are temporarily unavailable. Try again shortly.' });
     }
-
-    clearThrottle(key);
-    await touchLastSeen(user.id);
-    res.json({ token: issueToken({ userId: user.id, username: user.username }), user: toPublicUser(user) });
   });
 
   router.get('/auth/me', requireDatabase, requireAuth, (req: AuthedRequest, res) => {

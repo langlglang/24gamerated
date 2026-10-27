@@ -23,6 +23,7 @@ import { runMigrations } from './db/migrate.js';
 import { findById, findByUsername, toPublicUser, touchLastSeen } from './db/users.js';
 import { recordRatedMatch } from './db/matches.js';
 import { createChallenge, expireOlderThan, getChallenge, resolveChallenge } from './db/challenges.js';
+import { isWellFormed } from './payloads.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(here, CLIENT_DIST_RELATIVE);
@@ -131,12 +132,19 @@ async function persistRatedMatch(room: Room, outcome: RatedMatchOutcome): Promis
   }
 }
 
-/** Re-send a player's own record after anything that could have changed it. */
+/**
+ * Re-send a player's own record after anything that could have changed it.
+ * Callers fire and forget, so a database error is logged here, never thrown.
+ */
 async function pushProfile(userId: string): Promise<void> {
   const socketId = online.get(userId);
   if (!socketId || !isDatabaseConfigured()) return;
-  const row = await findById(userId);
-  io.to(socketId).emit('profile', row ? (toPublicUser(row) as PublicUserView) : null);
+  try {
+    const row = await findById(userId);
+    io.to(socketId).emit('profile', row ? (toPublicUser(row) as PublicUserView) : null);
+  } catch (err) {
+    console.error('[rated] failed to load profile:', err);
+  }
 }
 
 /** Seat two signed-in players in a fresh rated room and start it immediately. */
@@ -208,6 +216,13 @@ function ratedGuard(socketId: string): RatedGuard {
 
 io.on('connection', (socket) => {
   sessions.set(socket.id, {});
+
+  // Drop malformed packets before any handler sees them. Not calling next()
+  // discards the packet quietly; passing an error would surface as an
+  // unhandled 'error' event on the socket.
+  socket.use(([event, ...args], next) => {
+    if (isWellFormed(event, args)) next();
+  });
 
   // A token on the handshake signs the socket in without a round trip.
   const handshakeToken = socket.handshake.auth?.['token'];
@@ -327,16 +342,21 @@ io.on('connection', (socket) => {
       return;
     }
     void (async () => {
-      const row = await findById(claims.userId);
-      if (!row) {
-        ack({ ok: false, error: 'not-signed-in' });
-        return;
+      try {
+        const row = await findById(claims.userId);
+        if (!row) {
+          ack({ ok: false, error: 'not-signed-in' });
+          return;
+        }
+        sessions.set(socket.id, { ...sessionOf(socket.id), userId: row.id, username: row.username });
+        online.set(row.id, socket.id);
+        matchmaker.updateSocket(row.id, socket.id);
+        await touchLastSeen(row.id);
+        ack({ ok: true, user: toPublicUser(row) as PublicUserView });
+      } catch (err) {
+        console.error('[auth] identify failed:', err);
+        ack({ ok: false, error: 'accounts-unavailable' });
       }
-      sessions.set(socket.id, { ...sessionOf(socket.id), userId: row.id, username: row.username });
-      online.set(row.id, socket.id);
-      matchmaker.updateSocket(row.id, socket.id);
-      await touchLastSeen(row.id);
-      ack({ ok: true, user: toPublicUser(row) as PublicUserView });
     })();
   });
 
@@ -367,19 +387,24 @@ io.on('connection', (socket) => {
       return;
     }
     void (async () => {
-      const row = await findById(guard.userId);
-      if (!row) {
-        ack({ ok: false, error: 'not-signed-in' });
-        return;
+      try {
+        const row = await findById(guard.userId);
+        if (!row) {
+          ack({ ok: false, error: 'not-signed-in' });
+          return;
+        }
+        matchmaker.join({
+          userId: guard.userId,
+          username: guard.username,
+          rating: row.rating,
+          socketId: socket.id,
+        });
+        ack({ ok: true });
+        socket.emit('queueStatus', matchmaker.statusFor(guard.userId));
+      } catch (err) {
+        console.error('[queue] join failed:', err);
+        ack({ ok: false, error: 'accounts-unavailable' });
       }
-      matchmaker.join({
-        userId: guard.userId,
-        username: guard.username,
-        rating: row.rating,
-        socketId: socket.id,
-      });
-      ack({ ok: true });
-      socket.emit('queueStatus', matchmaker.statusFor(guard.userId));
     })();
   });
 
@@ -495,11 +520,15 @@ io.on('connection', (socket) => {
     const guard = ratedGuard(socket.id);
     if (!guard.ok) return;
     void (async () => {
-      const challenge = await getChallenge(id);
-      if (!challenge || challenge.fromUserId !== guard.userId) return;
-      const cancelled = await resolveChallenge(id, 'cancelled');
-      const toSocket = online.get(challenge.toUserId);
-      if (toSocket && cancelled) io.to(toSocket).emit('challengeUpdated', cancelled);
+      try {
+        const challenge = await getChallenge(id);
+        if (!challenge || challenge.fromUserId !== guard.userId) return;
+        const cancelled = await resolveChallenge(id, 'cancelled');
+        const toSocket = online.get(challenge.toUserId);
+        if (toSocket && cancelled) io.to(toSocket).emit('challengeUpdated', cancelled);
+      } catch (err) {
+        console.error('[challenge] cancel failed:', err);
+      }
     })();
   });
 
