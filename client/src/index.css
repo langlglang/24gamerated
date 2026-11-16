@@ -54,7 +54,7 @@
 
   .field {
     @apply w-full rounded-md border-2 border-ink bg-card px-4 py-3 text-ink placeholder:text-muted
-      focus:outline-none focus-visible:outline-none focus:ring-2 focus:ring-mark;
+      focus:outline-none focus-visible:outline-none focus:ring-2 focus:ring-ink focus:ring-offset-2 focus:ring-offset-paper;
   }
 
   .eyebrow {

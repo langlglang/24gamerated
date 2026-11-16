@@ -114,7 +114,9 @@ export function resolveBuzz(
       note:
         others.length === 1
           ? `No solution existed — point to ${headToHead(ctx) ? 'the other player' : 'the last player still in'}`
-          : 'No solution existed — a point to everyone still in',
+          : others.length > 1
+            ? 'No solution existed — a point to everyone still in'
+            : 'No solution existed — nobody left to score',
     };
   }
 

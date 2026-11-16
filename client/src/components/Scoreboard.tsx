@@ -38,12 +38,15 @@ export function Scoreboard({
                 {formatScore(state.scores[team] ?? 0)}
               </p>
               <ul className="mt-1 space-y-0.5 text-xs text-muted">
-                {members.map((p) => (
-                  <li key={p.id} className={p.lockedOut ? 'line-through' : ''}>
-                    {p.name}
-                    {statusOf(p, state) && ` · ${statusOf(p, state)}`}
-                  </li>
-                ))}
+                {members.map((p) => {
+                  const status = statusOf(p, state);
+                  return (
+                    <li key={p.id} className={p.lockedOut ? 'line-through' : ''}>
+                      {p.name}
+                      {status && ` · ${status}`}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           );

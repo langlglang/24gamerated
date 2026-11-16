@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   MAX_FFA_PLAYERS,
   type GameMode,
@@ -42,6 +42,13 @@ export function Home({
   const [rules, setRules] = useState<RuleSet>({ fractions: true, negatives: true });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // The profile usually arrives after first render; prefill once it does,
+  // without overwriting anything the player has already typed.
+  const username = user?.username;
+  useEffect(() => {
+    if (username) setName((current) => current || username);
+  }, [username]);
 
   async function submit() {
     if (!name.trim()) {

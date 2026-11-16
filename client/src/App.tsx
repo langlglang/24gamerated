@@ -55,14 +55,14 @@ export default function App() {
           {game.challenges[0]!.fromUsername} challenged you
           <button
             type="button"
-            className="ml-3 rounded bg-paper px-3 py-1 text-white"
+            className="ml-3 min-h-[44px] rounded-full bg-ink px-4 text-paper"
             onClick={() => void game.respondChallenge(game.challenges[0]!.id, true)}
           >
             Accept
           </button>
           <button
             type="button"
-            className="ml-2 rounded bg-tile px-3 py-1 text-white"
+            className="ml-2 min-h-[44px] rounded-full border-2 border-ink px-4 text-ink"
             onClick={() => void game.respondChallenge(game.challenges[0]!.id, false)}
           >
             Decline
