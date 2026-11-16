@@ -10,37 +10,58 @@
   }
 
   body {
-    @apply bg-slate-950 text-slate-100 antialiased;
-    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    @apply bg-paper font-sans text-ink antialiased;
     /* Rapid tapping on the buzz button should never zoom or select text. */
     -webkit-tap-highlight-color: transparent;
     user-select: none;
+  }
+
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-ink;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
 @layer components {
   .btn {
-    @apply rounded-xl px-4 py-3 font-semibold transition disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex min-h-[48px] items-center justify-center rounded-full px-5 font-semibold transition-colors
+      disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .btn-primary {
-    @apply btn bg-emerald-500 text-slate-950 hover:bg-emerald-400 active:scale-[0.98];
+    @apply btn bg-ink text-paper hover:bg-ink/85;
   }
 
   .btn-secondary {
-    @apply btn bg-slate-800 text-slate-100 hover:bg-slate-700 active:scale-[0.98];
+    @apply btn border-2 border-ink bg-transparent text-ink hover:bg-tile;
   }
 
   .btn-danger {
-    @apply btn bg-rose-600 text-white hover:bg-rose-500 active:scale-[0.98];
+    @apply btn bg-bad text-white hover:bg-bad/90;
   }
 
   .panel {
-    @apply rounded-2xl border border-slate-800 bg-slate-900/60 p-4;
+    @apply rounded-md border border-line bg-card p-4;
   }
 
   .field {
-    @apply w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100
-      placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none;
+    @apply w-full rounded-md border-2 border-ink bg-card px-4 py-3 text-ink placeholder:text-muted
+      focus:outline-none focus-visible:outline-none focus:ring-2 focus:ring-mark;
+  }
+
+  .eyebrow {
+    @apply text-xs font-semibold uppercase tracking-widest text-muted;
+  }
+
+  .rule {
+    @apply border-t border-ink;
   }
 }

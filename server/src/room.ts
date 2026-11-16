@@ -5,7 +5,7 @@ import {
   HANDS_PER_MATCH,
   HAND_IDLE_TIMEOUT_MS,
   HAND_RESULT_DISPLAY_MS,
-  MODE_PLAYER_COUNT,
+  MODE_SEATS,
   RECONNECT_GRACE_MS,
   applyPoints,
   buildDeck,
@@ -93,7 +93,7 @@ const fail = (error: ActionRejection): ActionResult => ({ ok: false, error });
 export class Room {
   readonly code: string;
   hostId: string;
-  mode: GameMode = 'p2';
+  mode: GameMode = 'ffa';
   rules: RuleSet = { fractions: true, negatives: true };
   players: Player[] = [];
 
@@ -167,7 +167,7 @@ export class Room {
     }
 
     if (this.phase !== 'lobby') return fail('wrong-phase');
-    if (this.players.length >= MODE_PLAYER_COUNT[this.mode]) return fail('room-full');
+    if (this.players.length >= MODE_SEATS[this.mode].max) return fail('room-full');
     if (this.players.some((p) => p.name.toLowerCase() === player.name.toLowerCase())) {
       return fail('name-taken');
     }
@@ -189,7 +189,7 @@ export class Room {
     if (playerId !== this.hostId) return fail('not-host');
     if (this.phase !== 'lobby') return fail('wrong-phase');
     if (mode) {
-      if (this.players.length > MODE_PLAYER_COUNT[mode]) return fail('room-full');
+      if (this.players.length > MODE_SEATS[mode].max) return fail('room-full');
       this.mode = mode;
     }
     if (rules) this.rules = rules;
@@ -213,7 +213,10 @@ export class Room {
     this.touch();
     if (playerId !== this.hostId) return fail('not-host');
     if (this.phase !== 'lobby') return fail('wrong-phase');
-    if (this.players.length !== MODE_PLAYER_COUNT[this.mode]) return fail('wrong-player-count');
+    const seats = MODE_SEATS[this.mode];
+    if (this.players.length < seats.min || this.players.length > seats.max) {
+      return fail('wrong-player-count');
+    }
     if (this.mode === 'p4team') {
       const a = this.players.filter((p) => p.team === 'A').length;
       const b = this.players.filter((p) => p.team === 'B').length;
@@ -370,7 +373,7 @@ export class Room {
       return;
     }
 
-    // 3-player: the hand stays live for whoever is left.
+    // Free-for-all: the hand stays live for whoever is left.
     this.activePlayerId = null;
     this.answerSteps = [];
     this.table = tableFromCards(this.currentCards);

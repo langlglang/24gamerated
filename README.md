@@ -2,7 +2,7 @@
 
 Real-time multiplayer **24**: four cards, combine them with `+ − × ÷` using each exactly once to
 make 24. Accounts with **Elo ratings**, 1v1 **ranked matchmaking**, and **rated friend challenges** —
-on top of the original guest room-code game, four game modes, and a solo training arena.
+on top of the original guest room-code game, free-for-all rooms for 2 to 10 players, 2v2 teams, and a solo training arena.
 
 > Built on top of [24gameonline](https://github.com/langlglang/24gameonline), which stays as the
 > unrated game. That repo is still `upstream` here, so fixes can flow forward.
@@ -174,21 +174,20 @@ part of the pressure.
 
 ### Scoring
 
-**2-player** — buzz correct: +1 buzzer. Buzz failed: +1 opponent, hand ends. No-solution correct:
-+1 caller. No-solution wrong: +1 opponent.
+**Free-for-all (2 to 10 players)** — one rule set for any table size. "Still in" means every
+other player who has not already buzzed and failed this hand.
 
-**3-player** — buzz correct: +1 buzzer, hand ends. Buzz failed: the buzzer is locked out and the
-hand *continues* for the other two on the same cards. If a second player also buzzes and fails, the
-hand ends immediately and **the point is auto-awarded to the player who stayed out** — they never
-have to buzz to collect it, and this holds whether or not the hand was solvable. No-solution call
-when nobody has buzzed yet — correct: +1 caller; wrong: **0.5 to each** of the other two.
-No-solution call after someone has already buzzed and failed — correct: +1 caller; wrong: +1 to the
-player who neither buzzed nor called.
+- Buzz correct: +1 buzzer, hand ends.
+- Buzz failed on a hand with **no solution**: **+1 to everyone still in**, hand ends. The buzzer
+  claimed a 24 that does not exist.
+- Buzz failed on a **solvable** hand: the buzzer is locked out and the hand continues for everyone
+  else on the same cards. When only one player is still in, the hand ends and that player gets the
+  point without having to buzz.
+- No-solution call correct: +1 caller. Wrong: **+1 to everyone still in**.
 
-Because two failed buzzes end the hand, a no-solution caller can face at most one locked-out
-opponent, and no hand can reach a third buzz.
+With two players every failure gives the opponent the point, which is the classic head-to-head rule.
 
-**4-player (2v2)** — like 2-player but scored per team; any member may act for their team, and a
+**4-player (2v2)** — like head-to-head but scored per team; any member may act for their team, and a
 team's failed attempt ends the hand.
 
 **Solo training** — no scoring; tracks hands played, buzzes, solve rate, average solve time, and

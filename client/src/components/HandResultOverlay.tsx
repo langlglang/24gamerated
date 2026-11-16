@@ -23,29 +23,29 @@ export function HandResultOverlay({
   state: PublicGameState;
 }) {
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/85 p-5 backdrop-blur-sm">
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-paper/95 p-5">
       <div className="panel w-full max-w-sm space-y-3 text-center">
-        <p className="text-xs uppercase tracking-widest text-slate-400">
+        <p className="text-xs uppercase tracking-widest text-muted">
           Hand {result.handNumber}
           {state.isTiebreak && ' · sudden death'}
         </p>
-        <p className="text-xl font-bold">{result.note}</p>
-        <p className="text-sm text-emerald-400">{pointsLine(result, state)}</p>
+        <p className="font-display text-2xl font-extrabold">{result.note}</p>
+        <p className="text-sm font-semibold text-good">{pointsLine(result, state)}</p>
 
-        <div className="rounded-xl bg-slate-950/60 p-3">
+        <div className="rounded-md bg-paper p-3">
           {result.solvable ? (
             <>
-              <p className="text-xs uppercase tracking-wide text-slate-500">One solution</p>
-              <p className="mt-1 break-words font-mono text-lg text-slate-100">
+              <p className="text-xs uppercase tracking-wide text-muted">One solution</p>
+              <p className="mt-1 break-words font-mono text-lg text-ink">
                 {result.solution} = 24
               </p>
             </>
           ) : (
-            <p className="font-semibold text-amber-400">This hand had no solution.</p>
+            <p className="font-semibold text-ink">This hand had no solution.</p>
           )}
         </div>
 
-        <p className="text-xs text-slate-500">Next hand shortly…</p>
+        <p className="text-xs text-muted">Next hand shortly…</p>
       </div>
     </div>
   );

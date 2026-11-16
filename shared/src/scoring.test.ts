@@ -9,19 +9,14 @@ import {
   type HandScoringContext,
 } from './scoring.js';
 
-const p2 = (solvable: boolean): HandScoringContext => ({
-  mode: 'p2',
-  playerIds: ['alice', 'bob'],
-  solvable,
-  lockedOut: [],
-});
+const ffa = (
+  players: string[],
+  solvable: boolean,
+  lockedOut: string[] = [],
+): HandScoringContext => ({ mode: 'ffa', playerIds: players, solvable, lockedOut });
 
-const p3 = (solvable: boolean, lockedOut: string[] = []): HandScoringContext => ({
-  mode: 'p3',
-  playerIds: ['alice', 'bob', 'cara'],
-  solvable,
-  lockedOut,
-});
+const TWO = ['alice', 'bob'];
+const FIVE = ['alice', 'bob', 'cara', 'dan', 'eve'];
 
 const p4 = (solvable: boolean): HandScoringContext => ({
   mode: 'p4team',
@@ -31,97 +26,66 @@ const p4 = (solvable: boolean): HandScoringContext => ({
   lockedOut: [],
 });
 
-describe('2-player scoring', () => {
+
+describe('free-for-all, two players (classic head to head)', () => {
   it('pays the buzzer for a correct answer', () => {
-    const r = resolveBuzz(p2(true), 'alice', true);
+    const r = resolveBuzz(ffa(TWO, true), 'alice', true);
     expect(r.points).toEqual({ alice: 1 });
     expect(r.handEnds).toBe(true);
   });
 
-  it('pays the opponent for a failed buzz and ends the hand', () => {
-    const r = resolveBuzz(p2(true), 'alice', false);
-    expect(r.points).toEqual({ bob: 1 });
-    expect(r.handEnds).toBe(true);
-    expect(r.lockOut).toBeNull();
+  it('gives the opponent the point on a failed buzz, solvable or not', () => {
+    for (const solvable of [true, false]) {
+      const r = resolveBuzz(ffa(TWO, solvable), 'alice', false);
+      expect(r.points).toEqual({ bob: 1 });
+      expect(r.handEnds).toBe(true);
+    }
   });
 
-  it('pays a correct no-solution call', () => {
-    expect(resolveNoSolutionCall(p2(false), 'alice').points).toEqual({ alice: 1 });
-  });
-
-  it('pays the opponent for a wrong no-solution call', () => {
-    expect(resolveNoSolutionCall(p2(true), 'alice').points).toEqual({ bob: 1 });
+  it('scores no-solution calls', () => {
+    expect(resolveNoSolutionCall(ffa(TWO, false), 'alice').points).toEqual({ alice: 1 });
+    expect(resolveNoSolutionCall(ffa(TWO, true), 'alice').points).toEqual({ bob: 1 });
   });
 });
 
-describe('3-player scoring', () => {
-  it('ends the hand on a correct buzz', () => {
-    const r = resolveBuzz(p3(true), 'alice', true);
-    expect(r.points).toEqual({ alice: 1 });
+describe('free-for-all, many players', () => {
+  it('pays only the buzzer for a correct answer', () => {
+    const r = resolveBuzz(ffa(FIVE, true), 'cara', true);
+    expect(r.points).toEqual({ cara: 1 });
     expect(r.handEnds).toBe(true);
   });
 
-  it('locks out a failed buzzer and keeps the hand alive', () => {
-    const r = resolveBuzz(p3(true), 'alice', false);
+  it('buzzing on a hand with no solution pays everyone still eligible and ends the hand', () => {
+    // bob already burned his buzz this hand, so he is not eligible.
+    const r = resolveBuzz(ffa(FIVE, false, ['bob']), 'alice', false);
+    expect(r.points).toEqual({ cara: 1, dan: 1, eve: 1 });
+    expect(r.handEnds).toBe(true);
+    expect(r.lockOut).toBe('alice');
+  });
+
+  it('a failed buzz on a solvable hand locks the buzzer out and keeps the hand alive', () => {
+    const r = resolveBuzz(ffa(FIVE, true), 'alice', false);
     expect(r.points).toEqual({});
     expect(r.handEnds).toBe(false);
     expect(r.lockOut).toBe('alice');
   });
 
-  it('auto-awards the point to the last player on a second failed buzz', () => {
-    // alice already failed; bob now fails too, so cara takes the point
-    // without having to buzz at all.
-    const r = resolveBuzz(p3(true, ['alice']), 'bob', false);
-    expect(r.points).toEqual({ cara: 1 });
+  it('auto-awards the last eligible player once everyone else has failed', () => {
+    const r = resolveBuzz(ffa(FIVE, true, ['alice', 'bob', 'cara']), 'dan', false);
+    expect(r.points).toEqual({ eve: 1 });
     expect(r.handEnds).toBe(true);
-    expect(r.lockOut).toBe('bob');
-  });
-
-  it('auto-awards regardless of whether the hand was solvable', () => {
-    const r = resolveBuzz(p3(false, ['alice']), 'bob', false);
-    expect(r.points).toEqual({ cara: 1 });
-    expect(r.handEnds).toBe(true);
-  });
-
-  it('never reaches a third buzz — two failures already ended the hand', () => {
-    // Both other players failing is terminal, so no state exists in which a
-    // third player can buzz and fail.
-    const first = resolveBuzz(p3(true), 'alice', false);
-    expect(first.handEnds).toBe(false);
-    const second = resolveBuzz(p3(true, ['alice']), 'bob', false);
-    expect(second.handEnds).toBe(true);
   });
 
   it('pays a correct no-solution call in full', () => {
-    const r = resolveNoSolutionCall(p3(false), 'alice');
-    expect(r.points).toEqual({ alice: 1 });
-    expect(r.handEnds).toBe(true);
-  });
-
-  it('splits 0.5 to each opponent for a wrong call when nobody has buzzed', () => {
-    const r = resolveNoSolutionCall(p3(true), 'alice');
-    expect(r.points).toEqual({ bob: 0.5, cara: 0.5 });
-    expect(r.handEnds).toBe(true);
-  });
-
-  it('pays the uninvolved player 1 for a wrong call after one buzz-fail', () => {
-    // alice already buzzed and failed; bob calls no-solution and is wrong;
-    // cara neither buzzed nor called, so cara takes the point.
-    const r = resolveNoSolutionCall(p3(true, ['alice']), 'bob');
-    expect(r.points).toEqual({ cara: 1 });
-    expect(r.handEnds).toBe(true);
-  });
-
-  it('still pays the caller for a right call after a buzz-fail', () => {
-    const r = resolveNoSolutionCall(p3(false, ['alice']), 'bob');
+    const r = resolveNoSolutionCall(ffa(FIVE, false, ['alice']), 'bob');
     expect(r.points).toEqual({ bob: 1 });
+    expect(r.handEnds).toBe(true);
   });
 
-  it('can only ever face one locked-out player when a call is made', () => {
-    // Two failed buzzes end the hand outright, so a caller never sees two
-    // locked-out opponents. This pins that invariant.
-    const afterTwoFailures = resolveBuzz(p3(true, ['alice']), 'bob', false);
-    expect(afterTwoFailures.handEnds).toBe(true);
+  it('a wrong no-solution call pays everyone else still eligible', () => {
+    const r = resolveNoSolutionCall(ffa(FIVE, true, ['alice']), 'bob');
+    expect(r.points).toEqual({ cara: 1, dan: 1, eve: 1 });
+    expect(r.handEnds).toBe(true);
   });
 });
 
@@ -151,10 +115,10 @@ describe('idle timeout', () => {
 });
 
 describe('scoreboard helpers', () => {
-  it('accumulates fractional points', () => {
-    let scores = applyPoints({}, { bob: 0.5, cara: 0.5 });
-    scores = applyPoints(scores, { bob: 0.5 });
-    expect(scores).toEqual({ bob: 1, cara: 0.5 });
+  it('accumulates points', () => {
+    let scores = applyPoints({}, { bob: 1, cara: 1 });
+    scores = applyPoints(scores, { bob: 1 });
+    expect(scores).toEqual({ bob: 2, cara: 1 });
   });
 
   it('identifies leaders and ties', () => {

@@ -76,8 +76,8 @@ export function CombineBoard({
   }
 
   return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="grid w-full grid-cols-4 justify-items-center gap-2 sm:gap-4">
+    <div className="flex flex-col gap-4">
+      <div className="grid w-full grid-cols-2 gap-3">
         {table.map((card) => (
           <PlayingCard
             key={card.id}
@@ -93,7 +93,7 @@ export function CombineBoard({
 
       <div
         key={shakeNonce}
-        className={`flex items-center gap-2 ${shakeNonce > 0 ? 'animate-shake' : ''}`}
+        className={`grid grid-cols-4 gap-2 ${shakeNonce > 0 ? 'animate-shake' : ''}`}
       >
         {OPS.map((op) => (
           <button
@@ -102,10 +102,10 @@ export function CombineBoard({
             disabled={!interactive || selectedId === null}
             onClick={() => setPendingOp(op)}
             className={[
-              'h-14 w-14 rounded-xl text-2xl font-bold transition disabled:opacity-30',
+              'h-14 rounded-md text-2xl font-bold transition-colors disabled:opacity-40',
               pendingOp === op
-                ? 'bg-amber-400 text-slate-950'
-                : 'bg-slate-800 text-slate-100 hover:bg-slate-700',
+                ? 'bg-ink text-paper'
+                : 'bg-tile text-ink hover:bg-line',
             ].join(' ')}
             aria-label={`operator ${op}`}
           >
@@ -114,10 +114,10 @@ export function CombineBoard({
         ))}
       </div>
 
-      <p className="h-5 text-sm text-rose-400">{errorMessage ?? ''}</p>
+      <p role="alert" className="h-5 text-center text-sm font-medium text-bad">{errorMessage ?? ''}</p>
 
       {interactive && (
-        <p className="text-center text-xs text-slate-500">
+        <p className="text-center text-sm text-muted">
           {selectedId === null
             ? 'Tap a card, then an operator, then another card.'
             : pendingOp === null
