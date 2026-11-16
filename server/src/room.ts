@@ -5,7 +5,7 @@ import {
   HANDS_PER_MATCH,
   HAND_IDLE_TIMEOUT_MS,
   HAND_RESULT_DISPLAY_MS,
-  MODE_PLAYER_COUNT,
+  MODE_SEATS,
   RECONNECT_GRACE_MS,
   applyPoints,
   buildDeck,
@@ -82,6 +82,9 @@ export interface RatedMatchOutcome {
 
 export type ActionResult = { ok: true } | { ok: false; error: ActionRejection };
 
+/** Least hand time left to the others after a failed buzz. */
+const HAND_RESUME_FLOOR_MS = 15_000;
+
 const OK: ActionResult = { ok: true };
 const fail = (error: ActionRejection): ActionResult => ({ ok: false, error });
 
@@ -93,7 +96,7 @@ const fail = (error: ActionRejection): ActionResult => ({ ok: false, error });
 export class Room {
   readonly code: string;
   hostId: string;
-  mode: GameMode = 'p2';
+  mode: GameMode = 'ffa';
   rules: RuleSet = { fractions: true, negatives: true };
   players: Player[] = [];
 
@@ -114,6 +117,12 @@ export class Room {
   private timer: ActiveTimer | null = null;
   private disconnectTimers = new Map<string, NodeJS.Timeout>();
   private phaseBeforePause: Phase | null = null;
+  /**
+   * Hand clock left when the last buzz froze it. A failed buzz resumes from
+   * here rather than restarting the full clock, so a big table cannot stretch
+   * one hand out by failing in turn.
+   */
+  private handIdleRemainingMs = HAND_IDLE_TIMEOUT_MS;
 
   lastResult: HandResultView | null = null;
   matchResult: MatchResultView | null = null;
@@ -167,7 +176,7 @@ export class Room {
     }
 
     if (this.phase !== 'lobby') return fail('wrong-phase');
-    if (this.players.length >= MODE_PLAYER_COUNT[this.mode]) return fail('room-full');
+    if (this.players.length >= MODE_SEATS[this.mode].max) return fail('room-full');
     if (this.players.some((p) => p.name.toLowerCase() === player.name.toLowerCase())) {
       return fail('name-taken');
     }
@@ -189,7 +198,7 @@ export class Room {
     if (playerId !== this.hostId) return fail('not-host');
     if (this.phase !== 'lobby') return fail('wrong-phase');
     if (mode) {
-      if (this.players.length > MODE_PLAYER_COUNT[mode]) return fail('room-full');
+      if (this.players.length > MODE_SEATS[mode].max) return fail('room-full');
       this.mode = mode;
     }
     if (rules) this.rules = rules;
@@ -213,7 +222,10 @@ export class Room {
     this.touch();
     if (playerId !== this.hostId) return fail('not-host');
     if (this.phase !== 'lobby') return fail('wrong-phase');
-    if (this.players.length !== MODE_PLAYER_COUNT[this.mode]) return fail('wrong-player-count');
+    const seats = MODE_SEATS[this.mode];
+    if (this.players.length < seats.min || this.players.length > seats.max) {
+      return fail('wrong-player-count');
+    }
     if (this.mode === 'p4team') {
       const a = this.players.filter((p) => p.team === 'A').length;
       const b = this.players.filter((p) => p.team === 'B').length;
@@ -273,6 +285,7 @@ export class Room {
     this.activePlayerId = null;
     this.lastResult = null;
     for (const p of this.players) p.lockedOut = false;
+    this.handIdleRemainingMs = HAND_IDLE_TIMEOUT_MS;
 
     this.phase = 'open';
     this.startTimer('hand-idle', HAND_IDLE_TIMEOUT_MS, () => {
@@ -290,6 +303,9 @@ export class Room {
     if (this.phase !== 'open') return fail('too-late');
     if (player.lockedOut) return fail('locked-out');
 
+    if (this.timer?.kind === 'hand-idle') {
+      this.handIdleRemainingMs = Math.max(this.timer.endsAt - Date.now(), 0);
+    }
     this.phase = 'answering';
     this.activePlayerId = playerId;
     this.table = tableFromCards(this.currentCards);
@@ -370,12 +386,13 @@ export class Room {
       return;
     }
 
-    // 3-player: the hand stays live for whoever is left.
+    // Free-for-all: the hand stays live for whoever is left, on whatever was
+    // left of the hand clock (with a short floor so the others get a real go).
     this.activePlayerId = null;
     this.answerSteps = [];
     this.table = tableFromCards(this.currentCards);
     this.phase = 'open';
-    this.startTimer('hand-idle', HAND_IDLE_TIMEOUT_MS, () => {
+    this.startTimer('hand-idle', Math.max(this.handIdleRemainingMs, HAND_RESUME_FLOOR_MS), () => {
       this.endHand(resolveIdleTimeout());
     });
     this.change();

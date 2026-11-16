@@ -35,7 +35,7 @@ function StatsPanel({
     <div className="panel grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
       {rows.map(([label, value]) => (
         <div key={label} className="flex justify-between gap-2">
-          <span className="text-slate-400">{label}</span>
+          <span className="text-muted">{label}</span>
           <span className="font-semibold tabular-nums">{value}</span>
         </div>
       ))}
@@ -51,7 +51,7 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
   if (state.phase === 'done') {
     return (
       <div className="mx-auto flex w-full max-w-md flex-col justify-center gap-5 p-5">
-        <h1 className="text-center text-3xl font-black text-emerald-400">Session complete</h1>
+        <h1 className="text-center font-display text-4xl font-extrabold">Session complete</h1>
         <StatsPanel stats={state.stats} />
         <button type="button" className="btn-primary" onClick={() => game.restart()}>
           New deck
@@ -65,7 +65,7 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
 
   return (
     <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 p-4">
-      <header className="flex items-baseline justify-between text-xs text-slate-400">
+      <header className="flex items-baseline justify-between text-xs text-muted">
         <button type="button" className="underline" onClick={onExit}>
           Exit
         </button>
@@ -112,26 +112,26 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
       </div>
 
       {state.phase === 'result' && state.lastResult && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/85 p-5 backdrop-blur-sm">
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-paper/95 p-5">
           <div className="panel w-full max-w-sm space-y-3 text-center">
             <p
               className={`text-2xl font-black ${
-                state.lastResult.correct ? 'text-emerald-400' : 'text-rose-400'
+                state.lastResult.correct ? 'text-good' : 'text-bad'
               }`}
             >
               {state.lastResult.correct ? 'Correct' : 'Missed'}
             </p>
-            <p className="text-sm text-slate-300">{state.lastResult.note}</p>
-            <div className="rounded-xl bg-slate-950/60 p-3">
+            <p className="text-sm text-ink">{state.lastResult.note}</p>
+            <div className="rounded-md bg-paper p-3">
               {state.lastResult.solvable ? (
                 <>
-                  <p className="text-xs uppercase tracking-wide text-slate-500">One solution</p>
+                  <p className="text-xs uppercase tracking-wide text-muted">One solution</p>
                   <p className="mt-1 break-words font-mono text-lg">
                     {state.lastResult.solution} = 24
                   </p>
                 </>
               ) : (
-                <p className="font-semibold text-amber-400">This hand had no solution.</p>
+                <p className="font-semibold text-ink">This hand had no solution.</p>
               )}
             </div>
             <button type="button" className="btn-secondary w-full" onClick={() => game.next()}>
@@ -161,8 +161,8 @@ export function Training({ onExit }: { onExit: () => void }) {
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-md flex-col justify-center gap-5 p-5">
-      <h1 className="text-center text-3xl font-black text-emerald-400">Training arena</h1>
-      <p className="text-center text-sm text-slate-400">
+      <h1 className="text-center font-display text-4xl font-extrabold">Training arena</h1>
+      <p className="text-center text-sm text-muted">
         One full deck, 13 hands, the same 5-second start and 10-second answer clocks as a real
         match.
       </p>

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  MODE_PLAYER_COUNT,
+  MODE_SEATS,
   describeRules,
   type GameMode,
   type PublicGameState,
@@ -18,18 +18,19 @@ interface Props {
   onLeave: () => void;
 }
 
-const MODES: GameMode[] = ['p2', 'p3', 'p4team'];
+const MODES: GameMode[] = ['ffa', 'p4team'];
 const MODE_LABEL: Record<GameMode, string> = {
-  p2: '2 players',
-  p3: '3 players',
-  p4team: '4 players (2v2)',
+  ffa: 'Everyone for themselves',
+  p4team: 'Teams, 2 v 2',
   solo: 'Solo',
 };
 
 export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave }: Props) {
   const isHost = selfId === state.hostId;
-  const seats = MODE_PLAYER_COUNT[state.mode];
-  const ready = state.players.length === seats;
+  const seats = MODE_SEATS[state.mode];
+  const count = state.players.length;
+  const ready = count >= seats.min && count <= seats.max;
+  const short = Math.max(seats.min - count, 0);
   const teamsBalanced =
     state.mode !== 'p4team' ||
     (state.players.filter((p) => p.team === 'A').length === 2 &&
@@ -49,11 +50,11 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
   return (
     <div className="mx-auto flex w-full max-w-md flex-col gap-5 p-5">
       <div className="panel text-center">
-        <p className="text-xs uppercase tracking-widest text-slate-400">Room code</p>
-        <p className="my-1 text-5xl font-black tracking-[0.3em] text-emerald-400">
+        <p className="text-xs uppercase tracking-widest text-muted">Room code</p>
+        <p className="my-1 font-display text-5xl font-extrabold tracking-[0.2em]">
           {state.roomCode}
         </p>
-        <button type="button" className="text-xs text-slate-400 underline" onClick={() => void copyCode()}>
+        <button type="button" className="min-h-[44px] px-3 text-sm text-muted underline" onClick={() => void copyCode()}>
           {copied ? 'Copied' : 'Tap to copy'}
         </button>
       </div>
@@ -61,8 +62,8 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
       <div className="panel">
         <div className="mb-2 flex items-baseline justify-between">
           <h2 className="font-semibold">Players</h2>
-          <span className="text-xs text-slate-400">
-            {state.players.length} / {seats}
+          <span className="text-xs text-muted">
+            {seats.min === seats.max ? `${count} / ${seats.max}` : `${count} joined · up to ${seats.max}`}
           </span>
         </div>
         <ul className="space-y-2">
@@ -70,8 +71,8 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
             <li key={p.id} className="flex items-center justify-between gap-2">
               <span className="truncate">
                 {p.name}
-                {p.id === selfId && <span className="text-slate-500"> (you)</span>}
-                {p.isHost && <span className="ml-1 text-xs text-amber-400">host</span>}
+                {p.id === selfId && <span className="text-muted"> (you)</span>}
+                {p.isHost && <span className="ml-1 text-xs text-ink">host</span>}
               </span>
               {state.mode === 'p4team' && (
                 <span className="flex gap-1">
@@ -82,10 +83,10 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
                       disabled={!isHost && p.id !== selfId}
                       onClick={() => onSetTeam(p.id, team)}
                       className={[
-                        'h-8 w-8 rounded-lg text-sm font-bold transition disabled:opacity-30',
+                        'h-11 w-11 rounded-md text-sm font-bold transition-colors disabled:opacity-40',
                         p.team === team
-                          ? 'bg-emerald-500 text-slate-950'
-                          : 'bg-slate-800 text-slate-300',
+                          ? 'bg-ink text-paper'
+                          : 'bg-tile text-ink',
                       ].join(' ')}
                     >
                       {team}
@@ -95,8 +96,8 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
               )}
             </li>
           ))}
-          {Array.from({ length: Math.max(seats - state.players.length, 0) }).map((_, i) => (
-            <li key={`empty-${i}`} className="text-sm italic text-slate-600">
+          {Array.from({ length: short }).map((_, i) => (
+            <li key={`empty-${i}`} className="text-sm italic text-muted">
               waiting for a player…
             </li>
           ))}
@@ -105,8 +106,8 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
 
       <div className="panel space-y-4">
         <div>
-          <p className="mb-2 text-sm font-semibold text-slate-300">Mode</p>
-          <div className="grid grid-cols-3 gap-2">
+          <p className="mb-2 text-sm font-semibold text-ink">Mode</p>
+          <div className="grid grid-cols-2 gap-2">
             {MODES.map((m) => (
               <button
                 key={m}
@@ -114,8 +115,8 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
                 disabled={!isHost}
                 onClick={() => onConfigure(m, undefined)}
                 className={[
-                  'rounded-xl px-2 py-2 text-xs font-semibold transition disabled:opacity-50',
-                  state.mode === m ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300',
+                  'min-h-[44px] rounded-md px-2 py-2 text-sm font-semibold transition-colors disabled:opacity-50',
+                  state.mode === m ? 'bg-ink text-paper' : 'bg-tile text-ink',
                 ].join(' ')}
               >
                 {MODE_LABEL[m]}
@@ -127,10 +128,10 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
         {isHost ? (
           <RuleToggles rules={state.rules} onChange={(r) => onConfigure(undefined, r)} disabled={false} />
         ) : (
-          <p className="text-sm text-slate-400">Rules: {describeRules(state.rules)}</p>
+          <p className="text-sm text-muted">Rules: {describeRules(state.rules)}</p>
         )}
 
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-muted">
           Every match is {state.totalHands} hands — one full deck.
         </p>
       </div>
@@ -143,13 +144,13 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
           onClick={onStart}
         >
           {!ready
-            ? `Waiting for ${seats - state.players.length} more`
+            ? `Waiting for ${short} more`
             : !teamsBalanced
               ? 'Teams must be 2 and 2'
               : 'Start match'}
         </button>
       ) : (
-        <p className="text-center text-sm text-slate-400">Waiting for the host to start…</p>
+        <p className="text-center text-sm text-muted">Waiting for the host to start…</p>
       )}
 
       <button type="button" className="btn-secondary" onClick={onLeave}>

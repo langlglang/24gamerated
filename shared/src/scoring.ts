@@ -1,9 +1,8 @@
 import type { GameMode, TeamId } from './types.js';
 
 /**
- * Scores are keyed by "score holder": a player id in 2P/3P/solo, a team id in
- * 4P. Fractional points are real (3-player wrong no-solution call pays 0.5 to
- * each opponent), so the score display must handle halves.
+ * Scores are keyed by "score holder": a player id in free-for-all and solo, a
+ * team id in 4P teams.
  */
 export type ScoreKey = string;
 
@@ -14,14 +13,14 @@ export interface HandScoringContext {
   readonly teamOf?: Readonly<Record<string, TeamId>>;
   /** Server-side solver verdict for the dealt cards under the active rules. */
   readonly solvable: boolean;
-  /** Players who have already buzzed and failed this hand (3P lockout). */
+  /** Players who have already buzzed and failed this hand (free-for-all lockout). */
   readonly lockedOut: readonly string[];
 }
 
 export interface HandResolution {
   readonly points: Readonly<Record<ScoreKey, number>>;
   readonly handEnds: boolean;
-  /** Player to lock out for the rest of the hand (3P buzz-fail). */
+  /** Player to lock out for the rest of the hand (free-for-all buzz-fail). */
   readonly lockOut: string | null;
   /** Short human-readable explanation for the result overlay. */
   readonly note: string;
@@ -37,8 +36,21 @@ function otherTeam(team: TeamId): TeamId {
   return team === 'A' ? 'B' : 'A';
 }
 
-function opponentsOf(ctx: HandScoringContext, playerId: string): string[] {
-  return ctx.playerIds.filter((id) => id !== playerId);
+/** Everyone except `actorId` who has not burned their buzz this hand. */
+function stillEligible(ctx: HandScoringContext, actorId: string): string[] {
+  return ctx.playerIds.filter((id) => id !== actorId && !ctx.lockedOut.includes(id));
+}
+
+/** True for a two-player room, where "the other player" reads naturally. */
+function headToHead(ctx: HandScoringContext): boolean {
+  return ctx.playerIds.length === 2;
+}
+
+/** One point to each listed player. */
+function pointEach(ids: readonly string[]): Record<ScoreKey, number> {
+  const points: Record<ScoreKey, number> = {};
+  for (const id of ids) points[id] = 1;
+  return points;
 }
 
 /** Which score key a player's points land on, given the mode. */
@@ -49,8 +61,18 @@ export function scoreKeyFor(ctx: HandScoringContext, playerId: string): ScoreKey
 /**
  * Resolve a buzz attempt that has finished (correctly or not).
  *
- * 3-player is the only mode where a failed buzz does not end the hand: the
- * buzzer is locked out and the remaining players keep playing the same cards.
+ * Free-for-all, any number of players:
+ *  - correct                      -> buzzer +1, hand ends
+ *  - failed, hand has no solution -> every other player still eligible to
+ *                                    buzz gets +1, hand ends (the buzzer
+ *                                    claimed a 24 that does not exist)
+ *  - failed, hand is solvable     -> buzzer is locked out and the hand stays
+ *                                    live for everyone else; once only one
+ *                                    eligible player is left they take the
+ *                                    point without having to buzz
+ *
+ * With two players both failure branches give the opponent the point, which
+ * is the classic head-to-head rule.
  */
 export function resolveBuzz(
   ctx: HandScoringContext,
@@ -66,18 +88,6 @@ export function resolveBuzz(
     };
   }
 
-  if (ctx.mode === 'p2') {
-    const opponent = opponentsOf(ctx, buzzerId)[0]!;
-    return correct
-      ? { points: { [buzzerId]: 1 }, handEnds: true, lockOut: null, note: 'Buzzer solved it' }
-      : {
-          points: { [opponent]: 1 },
-          handEnds: true,
-          lockOut: null,
-          note: 'Failed buzz — point to opponent',
-        };
-  }
-
   if (ctx.mode === 'p4team') {
     const team = teamOf(ctx, buzzerId);
     return correct
@@ -90,24 +100,35 @@ export function resolveBuzz(
         };
   }
 
-  // 3-player
   if (correct) {
     return { points: { [buzzerId]: 1 }, handEnds: true, lockOut: null, note: 'Buzzer solved it' };
   }
 
-  // A failed buzz locks the buzzer out and the hand continues. Once two
-  // players have failed, the hand ends immediately and the point goes to the
-  // one who stayed out — they never have to buzz to collect it.
-  const lockedAfter = new Set([...ctx.lockedOut, buzzerId]);
-  const survivors = ctx.playerIds.filter((id) => !lockedAfter.has(id));
+  const others = stillEligible(ctx, buzzerId);
 
-  if (survivors.length === 1) {
-    const winner = survivors[0]!;
+  if (!ctx.solvable) {
     return {
-      points: { [winner]: 1 },
+      points: pointEach(others),
       handEnds: true,
       lockOut: buzzerId,
-      note: 'Two failed buzzes — point to the player who stayed out',
+      note:
+        others.length === 1
+          ? `No solution existed — point to ${headToHead(ctx) ? 'the other player' : 'the last player still in'}`
+          : others.length > 1
+            ? 'No solution existed — a point to everyone still in'
+            : 'No solution existed — nobody left to score',
+    };
+  }
+
+  if (others.length <= 1) {
+    return {
+      points: pointEach(others),
+      handEnds: true,
+      lockOut: buzzerId,
+      note:
+        others.length === 1
+          ? 'Failed buzz — point to the last player still in'
+          : 'Failed buzz — nobody left to score',
     };
   }
 
@@ -120,14 +141,8 @@ export function resolveBuzz(
 }
 
 /**
- * Resolve a "no solution" call.
- *
- * The 3-player wrong-call payout depends on whether anyone has already burned
- * their buzz on this hand:
- *  - nobody has     -> the other two split the blame reward, 0.5 each
- *  - someone has    -> the single player who neither buzzed nor called takes 1
- *
- * See [resolveBuzz] for the matching rule on a second failed buzz.
+ * Resolve a "no solution" call. Right: caller +1. Wrong: every other player
+ * still eligible to buzz gets +1, the mirror of buzzing on an impossible hand.
  */
 export function resolveNoSolutionCall(
   ctx: HandScoringContext,
@@ -142,23 +157,6 @@ export function resolveNoSolutionCall(
       lockOut: null,
       note: callerWasRight ? 'Correct — no solution' : 'Wrong — this hand was solvable',
     };
-  }
-
-  if (ctx.mode === 'p2') {
-    const opponent = opponentsOf(ctx, callerId)[0]!;
-    return callerWasRight
-      ? {
-          points: { [callerId]: 1 },
-          handEnds: true,
-          lockOut: null,
-          note: 'Correct no-solution call',
-        }
-      : {
-          points: { [opponent]: 1 },
-          handEnds: true,
-          lockOut: null,
-          note: 'Wrong call — point to opponent',
-        };
   }
 
   if (ctx.mode === 'p4team') {
@@ -178,7 +176,6 @@ export function resolveNoSolutionCall(
         };
   }
 
-  // 3-player
   if (callerWasRight) {
     return {
       points: { [callerId]: 1 },
@@ -188,32 +185,17 @@ export function resolveNoSolutionCall(
     };
   }
 
-  if (ctx.lockedOut.length === 0) {
-    const points: Record<string, number> = {};
-    for (const id of opponentsOf(ctx, callerId)) points[id] = 0.5;
-    return {
-      points,
-      handEnds: true,
-      lockOut: null,
-      note: 'Wrong call — 0.5 to each opponent',
-    };
-  }
-
-  // Someone already buzzed and failed, so the reward goes to the player who
-  // neither buzzed nor called. At most one player can be locked out when a
-  // call happens — a second failed buzz ends the hand outright — so there is
-  // always exactly one such player. The empty fallback is defensive only.
-  const innocent = ctx.playerIds.filter(
-    (id) => id !== callerId && !ctx.lockedOut.includes(id),
-  );
-  const beneficiary = innocent.length === 1 ? innocent[0]! : null;
+  const others = stillEligible(ctx, callerId);
   return {
-    points: beneficiary ? { [beneficiary]: 1 } : {},
+    points: pointEach(others),
     handEnds: true,
     lockOut: null,
-    note: beneficiary
-      ? 'Wrong call — point to the player who stayed out'
-      : 'Wrong call — no eligible player left to score',
+    note:
+      others.length === 1
+        ? `Wrong call — point to ${headToHead(ctx) ? 'the other player' : 'the last player still in'}`
+        : others.length > 1
+          ? 'Wrong call — a point to everyone still in'
+          : 'Wrong call — nobody left to score',
   };
 }
 

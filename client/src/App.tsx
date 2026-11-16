@@ -39,7 +39,7 @@ export default function App() {
         <button
           type="button"
           onClick={game.clearNotice}
-          className="fixed inset-x-0 top-0 z-30 bg-rose-600 px-4 py-2 text-center text-sm font-semibold text-white"
+          className="fixed inset-x-0 top-0 z-30 bg-bad px-4 py-2 text-center text-sm font-semibold text-white"
         >
           {game.notice} — tap to dismiss
         </button>
@@ -51,18 +51,18 @@ export default function App() {
         sit on the home page.
       */}
       {!state && screen !== 'ranked' && game.challenges.length > 0 && (
-        <div className="fixed inset-x-0 top-0 z-30 bg-amber-500 px-4 py-2 text-center text-sm font-semibold text-slate-950">
+        <div className="fixed inset-x-0 top-0 z-30 bg-mark px-4 py-2 text-center text-sm font-semibold text-ink">
           {game.challenges[0]!.fromUsername} challenged you
           <button
             type="button"
-            className="ml-3 rounded bg-slate-950 px-3 py-1 text-white"
+            className="ml-3 min-h-[44px] rounded-full bg-ink px-4 text-paper"
             onClick={() => void game.respondChallenge(game.challenges[0]!.id, true)}
           >
             Accept
           </button>
           <button
             type="button"
-            className="ml-2 rounded bg-slate-800 px-3 py-1 text-white"
+            className="ml-2 min-h-[44px] rounded-full border-2 border-ink px-4 text-ink"
             onClick={() => void game.respondChallenge(game.challenges[0]!.id, false)}
           >
             Decline

@@ -78,7 +78,7 @@ async function main() {
 
   const created = await emitWithAck(host, 'room:create', {
     name: 'Host',
-    mode: 'p2',
+    mode: 'ffa',
     rules: RULES,
   });
   check('host created a room', created.ok === true);

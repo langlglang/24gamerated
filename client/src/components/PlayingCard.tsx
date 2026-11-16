@@ -21,20 +21,16 @@ export function PlayingCard({
   onClick,
 }: Props) {
   const base =
-    'relative flex aspect-[3/4] w-full max-w-[7.5rem] select-none flex-col items-center justify-center ' +
-    'rounded-2xl border-2 text-center transition';
+    'relative flex h-28 w-full select-none items-center justify-center gap-2 rounded-md border-2 ' +
+    'border-ink text-center transition sm:h-32';
 
-  const skin = derived
-    ? 'border-emerald-400 bg-emerald-500/15 text-emerald-100 shadow-[0_0_24px_-6px] shadow-emerald-500/60'
-    : 'border-slate-300 bg-slate-50 text-slate-900';
-
-  const ring = selected ? 'ring-4 ring-amber-400 -translate-y-2' : '';
-  const dim = disabled ? 'opacity-60' : 'hover:-translate-y-1 cursor-pointer';
+  const skin = selected ? 'bg-mark -translate-y-1' : derived ? 'bg-tile' : 'bg-card';
+  const dim = disabled ? 'cursor-default' : 'cursor-pointer hover:-translate-y-0.5';
 
   const red = suit ? SUIT_IS_RED[suit] : false;
 
   // Long fractions like 105/8 need to shrink to stay on the card.
-  const size = label.length >= 5 ? 'text-2xl' : label.length >= 3 ? 'text-3xl' : 'text-5xl';
+  const size = label.length >= 5 ? 'text-3xl' : label.length >= 3 ? 'text-4xl' : 'text-6xl';
 
   return (
     <button
@@ -42,17 +38,22 @@ export function PlayingCard({
       onClick={onClick}
       disabled={disabled}
       aria-pressed={selected}
-      className={[base, skin, ring, dim, shake ? 'animate-shake' : '', derived ? 'animate-pop' : '']
+      aria-label={suit && !derived ? `${label} of ${suit}` : label}
+      className={[base, skin, dim, shake ? 'animate-shake' : '', derived ? 'animate-pop' : '']
         .filter(Boolean)
         .join(' ')}
     >
-      <span className={`font-bold tabular-nums ${size}`}>{label}</span>
+      <span className={`font-display font-extrabold leading-none tabular-nums ${size}`}>{label}</span>
       {suit && !derived && (
-        <span className={`mt-1 text-2xl ${red ? 'text-rose-600' : 'text-slate-800'}`}>
+        <span aria-hidden="true" className={`text-2xl leading-none ${red ? 'text-bad' : 'text-ink'}`}>
           {SUIT_SYMBOL[suit]}
         </span>
       )}
-      {derived && <span className="mt-1 text-xs uppercase tracking-wide opacity-70">combined</span>}
+      {derived && (
+        <span className="absolute bottom-2 left-0 right-0 text-[11px] font-semibold uppercase tracking-widest text-muted">
+          combined
+        </span>
+      )}
     </button>
   );
 }

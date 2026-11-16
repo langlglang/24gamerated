@@ -62,7 +62,7 @@ export class RoomManager {
     const room = new Room(
       code,
       { id: a.userId, name: a.username, socketId: a.socketId },
-      'p2',
+      'ffa',
       RATED_RULES,
       {
         ...this.events,

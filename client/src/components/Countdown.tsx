@@ -45,21 +45,25 @@ export function CountdownBar({ timer }: { timer: TimerView | null }) {
 
   const pct = Math.max(0, Math.min(100, (remaining / timer.durationMs) * 100));
   const urgent = timer.kind === 'buzz-start' || timer.kind === 'answer';
-  const color = !urgent ? 'bg-slate-500' : pct < 34 ? 'bg-rose-500' : 'bg-amber-400';
+  const color = urgent && pct < 34 ? 'bg-bad' : 'bg-ink';
 
   return (
     <div className="w-full">
-      <div className="mb-1 flex items-baseline justify-between text-xs text-slate-400">
+      <div className="mb-1.5 flex items-baseline justify-between text-xs text-muted">
         <span>{LABELS[timer.kind]}</span>
-        <span className="tabular-nums font-semibold text-slate-200">
+        <span className={`font-semibold tabular-nums ${urgent && pct < 34 ? 'text-bad' : 'text-ink'}`}>
           {(remaining / 1000).toFixed(1)}s
         </span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
-        <div
-          className={`h-full rounded-full transition-[width] duration-75 ${color}`}
-          style={{ width: `${pct}%` }}
-        />
+      <div
+        className="h-1 w-full bg-line"
+        role="progressbar"
+        aria-label={LABELS[timer.kind]}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(pct)}
+      >
+        <div className={`h-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );

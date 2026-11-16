@@ -1,10 +1,20 @@
-import type { PublicGameState } from '@24game/shared';
+import type { PlayerView, PublicGameState } from '@24game/shared';
 
 function formatScore(value: number): string {
-  // Halves are real in 3-player mode, so 1.5 must not render as 2.
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
+function statusOf(p: PlayerView, state: PublicGameState): string {
+  if (!p.connected) return 'offline';
+  if (p.lockedOut) return 'locked out';
+  if (p.id === state.activePlayerId) return 'answering…';
+  return '';
+}
+
+/**
+ * Two players: a big head-to-head line, you on the left. Teams: two columns.
+ * Three or more: a ranked list that stays readable up to the 10-seat cap.
+ */
 export function Scoreboard({
   state,
   selfId,
@@ -14,29 +24,29 @@ export function Scoreboard({
 }) {
   if (state.mode === 'p4team') {
     return (
-      <div className="grid grid-cols-2 gap-3">
-        {(['A', 'B'] as const).map((team) => {
+      <div className="grid grid-cols-2 gap-6">
+        {(['A', 'B'] as const).map((team, i) => {
           const members = state.players.filter((p) => p.team === team);
           const mine = members.some((p) => p.id === selfId);
           return (
-            <div
-              key={team}
-              className={`panel ${mine ? 'border-emerald-500/60' : ''}`}
-            >
-              <div className="flex items-baseline justify-between">
-                <span className="text-sm font-semibold text-slate-300">Team {team}</span>
-                <span className="text-2xl font-bold tabular-nums">
-                  {formatScore(state.scores[team] ?? 0)}
-                </span>
-              </div>
-              <ul className="mt-1 space-y-0.5 text-xs text-slate-400">
-                {members.map((p) => (
-                  <li key={p.id} className={p.lockedOut ? 'line-through opacity-50' : ''}>
-                    {p.name}
-                    {!p.connected && ' (offline)'}
-                    {p.id === state.activePlayerId && ' — answering'}
-                  </li>
-                ))}
+            <div key={team} className={i === 1 ? 'text-right' : ''}>
+              <p className="text-sm text-muted">
+                Team {team}
+                {mine && ' · you'}
+              </p>
+              <p className="font-display text-5xl font-extrabold leading-none tabular-nums">
+                {formatScore(state.scores[team] ?? 0)}
+              </p>
+              <ul className="mt-1 space-y-0.5 text-xs text-muted">
+                {members.map((p) => {
+                  const status = statusOf(p, state);
+                  return (
+                    <li key={p.id} className={p.lockedOut ? 'line-through' : ''}>
+                      {p.name}
+                      {status && ` · ${status}`}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           );
@@ -45,40 +55,67 @@ export function Scoreboard({
     );
   }
 
-  return (
-    <div className="flex flex-wrap gap-2">
-      {state.players.map((p) => {
-        const isSelf = p.id === selfId;
-        const answering = p.id === state.activePlayerId;
-        return (
+  const me = state.players.find((p) => p.id === selfId);
+  const others = state.players.filter((p) => p.id !== selfId);
+
+  if (state.players.length === 2 && me && others[0]) {
+    const them = others[0];
+    return (
+      <div className="flex items-end justify-between gap-4">
+        {[me, them].map((p, i) => (
           <div
             key={p.id}
-            className={[
-              'panel flex-1 min-w-[8rem]',
-              isSelf ? 'border-emerald-500/60' : '',
-              p.lockedOut ? 'opacity-50' : '',
-              answering ? 'ring-2 ring-amber-400' : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
+            className={['flex flex-col gap-0.5', i === 1 ? 'items-end text-right' : ''].join(' ')}
           >
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="truncate text-sm font-semibold text-slate-300">
-                {p.name}
-                {isSelf && ' (you)'}
-              </span>
-              <span className="text-2xl font-bold tabular-nums">
-                {formatScore(state.scores[p.id] ?? 0)}
-              </span>
-            </div>
-            <div className="mt-0.5 h-4 text-xs text-slate-400">
-              {!p.connected && 'offline'}
-              {p.connected && p.lockedOut && 'locked out'}
-              {p.connected && !p.lockedOut && answering && 'answering…'}
-            </div>
+            <span className="max-w-[9rem] truncate text-sm text-muted">
+              {i === 0 ? 'You' : p.name}
+            </span>
+            <span
+              className={[
+                'font-display text-5xl font-extrabold leading-none tabular-nums',
+                p.lockedOut ? 'text-muted line-through' : '',
+              ].join(' ')}
+            >
+              {formatScore(state.scores[p.id] ?? 0)}
+            </span>
+            <span className="h-4 text-xs font-medium text-muted">{statusOf(p, state)}</span>
           </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Three or more: highest score first so standings read at a glance.
+  const ranked = [...state.players].sort(
+    (a, b) => (state.scores[b.id] ?? 0) - (state.scores[a.id] ?? 0),
+  );
+
+  return (
+    <ol className="divide-y divide-line border-y border-ink">
+      {ranked.map((p) => {
+        const isSelf = p.id === selfId;
+        const answering = p.id === state.activePlayerId;
+        const status = statusOf(p, state);
+        return (
+          <li
+            key={p.id}
+            className={[
+              'flex items-center justify-between gap-3 px-1 py-1.5 text-sm',
+              answering ? 'bg-mark' : '',
+              p.lockedOut ? 'text-muted' : '',
+            ].join(' ')}
+          >
+            <span className="truncate">
+              <span className={isSelf ? 'font-semibold' : ''}>{p.name}</span>
+              {isSelf && <span className="text-muted"> (you)</span>}
+              {status && <span className="ml-2 text-xs text-muted">{status}</span>}
+            </span>
+            <span className="font-display text-xl font-extrabold tabular-nums">
+              {formatScore(state.scores[p.id] ?? 0)}
+            </span>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }

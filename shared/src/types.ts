@@ -62,13 +62,21 @@ export interface TableCard {
   readonly sourceIds: readonly string[];
 }
 
-export type GameMode = 'p2' | 'p3' | 'p4team' | 'solo';
+/**
+ * - `ffa`: free-for-all, any number of players from 2 up to the seat cap.
+ * - `p4team`: exactly four players, 2 v 2.
+ * - `solo`: training.
+ */
+export type GameMode = 'ffa' | 'p4team' | 'solo';
 
-export const MODE_PLAYER_COUNT: Readonly<Record<GameMode, number>> = {
-  p2: 2,
-  p3: 3,
-  p4team: 4,
-  solo: 1,
+/** Largest free-for-all room. Keeps the scoreboard readable on a phone. */
+export const MAX_FFA_PLAYERS = 10;
+
+/** Inclusive seat range per mode. A match can start anywhere inside it. */
+export const MODE_SEATS: Readonly<Record<GameMode, { readonly min: number; readonly max: number }>> = {
+  ffa: { min: 2, max: MAX_FFA_PLAYERS },
+  p4team: { min: 4, max: 4 },
+  solo: { min: 1, max: 1 },
 };
 
 export type TeamId = 'A' | 'B';

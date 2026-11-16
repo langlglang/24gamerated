@@ -1,4 +1,4 @@
-import { MODE_PLAYER_COUNT, OPS } from '@24game/shared';
+import { MODE_SEATS, OPS } from '@24game/shared';
 
 /**
  * Shape checks for everything a client can send. The handlers in index.ts
@@ -15,7 +15,7 @@ const isString = (v: unknown): v is string => typeof v === 'string';
 const isOptionalString = (v: unknown): boolean => v === undefined || isString(v);
 const isFunction = (v: unknown): boolean => typeof v === 'function';
 
-const isGameMode = (v: unknown): boolean => isString(v) && Object.hasOwn(MODE_PLAYER_COUNT, v);
+const isGameMode = (v: unknown): boolean => isString(v) && Object.hasOwn(MODE_SEATS, v);
 
 const isRuleSet = (v: unknown): boolean =>
   isObject(v) && typeof v['fractions'] === 'boolean' && typeof v['negatives'] === 'boolean';

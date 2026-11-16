@@ -22,7 +22,7 @@ const ROWS: { key: keyof RuleSet; label: string; blurb: string }[] = [
 export function RuleToggles({ rules, onChange, disabled }: Props) {
   return (
     <div className="space-y-2">
-      <p className="text-sm font-semibold text-slate-300">Rules</p>
+      <p className="text-sm font-semibold">Rules</p>
       {ROWS.map((row) => {
         const on = rules[row.key];
         return (
@@ -30,17 +30,18 @@ export function RuleToggles({ rules, onChange, disabled }: Props) {
             key={row.key}
             type="button"
             disabled={disabled}
+            aria-pressed={on}
             onClick={() => onChange({ ...rules, [row.key]: !on })}
-            className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-700 px-4 py-3 text-left transition disabled:opacity-60"
+            className="flex w-full items-center justify-between gap-3 rounded-md border border-line px-4 py-3 text-left transition disabled:opacity-60"
           >
             <span>
               <span className="block font-semibold">{row.label}</span>
-              <span className="block text-xs text-slate-400">{row.blurb}</span>
+              <span className="block text-xs text-muted">{row.blurb}</span>
             </span>
             <span
               className={[
                 'flex h-7 w-14 shrink-0 items-center rounded-full p-1 transition',
-                on ? 'justify-end bg-emerald-500' : 'justify-start bg-slate-700',
+                on ? 'justify-end bg-ink' : 'justify-start bg-muted',
               ].join(' ')}
             >
               <span className="h-5 w-5 rounded-full bg-white" />
