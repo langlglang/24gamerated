@@ -137,6 +137,7 @@ async function main() {
     const result = await waitForState(hostState, (s) => s.phase === 'hand-result', 'hand result');
     check('solving the hand scored a point', (result.scores[created.playerId] ?? 0) >= 1);
     check('the result reveals a solution', typeof result.lastResult?.solution === 'string');
+    check("the result shows the buzzer's own route", result.lastResult?.solvedBy === created.playerId);
     solvedHand = result;
   }
 

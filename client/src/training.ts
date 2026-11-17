@@ -7,6 +7,7 @@ import {
   HAND_RESULT_DISPLAY_MS,
   applyCombine,
   dealMatch,
+  expressionForSteps,
   solveCards,
   tableFromCards,
   validateSteps,
@@ -36,6 +37,8 @@ export interface TrainingResult {
   handNumber: number;
   solvable: boolean;
   solution: string | null;
+  /** True when `solution` is the player's own combine steps. */
+  ownSolution: boolean;
   note: string;
   correct: boolean;
 }
@@ -198,13 +201,15 @@ export class TrainingGame {
   }
 
   private endHand(outcome: { note: string; correct: boolean }): void {
+    const own = outcome.correct ? expressionForSteps(this.cards, this.steps) : null;
     this.clearTimer();
     this.stats.handsPlayed += 1;
     this.phase = 'result';
     this.lastResult = {
       handNumber: this.handIndex + 1,
       solvable: this.solve.solvable,
-      solution: this.solve.expression,
+      solution: own ?? this.solve.expression,
+      ownSolution: own !== null,
       note: outcome.note,
       correct: outcome.correct,
     };
