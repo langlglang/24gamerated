@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { equals, rational } from './rational.js';
-import { isSolvable, solveValues } from './solver.js';
+import { expressionForSteps, isSolvable, solveValues } from './solver.js';
+import type { Card } from './cards.js';
 import { ALL_RULE_SETS, describeRules, type RuleSet } from './types.js';
 import { tableFromValues, validateSteps } from './validator.js';
 
@@ -154,5 +155,46 @@ describe('solver', () => {
         for (let b = 1; b <= 13; b += 4)
           for (let c = 1; c <= 13; c += 5)
             for (let d = 1; d <= 13; d += 5) expectSelfConsistent([a, b, c, d], rules);
+  });
+});
+
+describe('expressionForSteps', () => {
+  const cards: Card[] = [
+    { id: 'S8', rank: 8, suit: 'S' },
+    { id: 'H3', rank: 3, suit: 'H' },
+    { id: 'D8', rank: 8, suit: 'D' },
+    { id: 'C3', rank: 3, suit: 'C' },
+  ];
+
+  it("renders the player's own route, not the solver's", () => {
+    // 8 / 3 -> m1 ; 3 - m1 -> m2 ; 8 / m2 -> 24
+    const text = expressionForSteps(cards, [
+      { aId: 'D8', op: '/', bId: 'C3' },
+      { aId: 'H3', op: '-', bId: 'm1' },
+      { aId: 'S8', op: '/', bId: 'm2' },
+    ]);
+    expect(text).toBe('8 / (3 - 8 / 3)');
+  });
+
+  it('adds parentheses only where precedence needs them', () => {
+    const text = expressionForSteps(
+      [
+        { id: 'a', rank: 1, suit: 'S' },
+        { id: 'b', rank: 2, suit: 'S' },
+        { id: 'c', rank: 3, suit: 'S' },
+        { id: 'd', rank: 4, suit: 'S' },
+      ],
+      [
+        { aId: 'a', op: '+', bId: 'b' },
+        { aId: 'm1', op: '+', bId: 'c' },
+        { aId: 'm2', op: '*', bId: 'd' },
+      ],
+    );
+    expect(text).toBe('(1 + 2 + 3) * 4');
+  });
+
+  it('returns null for incomplete or broken steps', () => {
+    expect(expressionForSteps(cards, [{ aId: 'S8', op: '+', bId: 'H3' }])).toBeNull();
+    expect(expressionForSteps(cards, [{ aId: 'S8', op: '+', bId: 'S8' }])).toBeNull();
   });
 });

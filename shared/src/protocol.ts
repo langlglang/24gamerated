@@ -46,8 +46,13 @@ export interface HandResultView {
   readonly handNumber: number;
   readonly cards: readonly Card[];
   readonly solvable: boolean;
-  /** A valid solution, revealed after the hand. Null when none exists. */
+  /**
+   * The solution shown after the hand: the solving player's own route when
+   * someone solved it, otherwise one the solver found. Null when none exists.
+   */
   readonly solution: string | null;
+  /** Player id whose combine steps `solution` shows; null when it is the solver's. */
+  readonly solvedBy: string | null;
   readonly pointsAwarded: Readonly<Record<ScoreKey, number>>;
   readonly note: string;
 }

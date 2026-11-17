@@ -15,12 +15,25 @@ function pointsLine(result: HandResultView, state: PublicGameState): string {
     .join(' · ');
 }
 
+function solutionLabel(
+  result: HandResultView,
+  state: PublicGameState,
+  selfId: string | null,
+): string {
+  if (!result.solvedBy) return 'One solution';
+  if (result.solvedBy === selfId) return 'Your solution';
+  const name = state.players.find((p) => p.id === result.solvedBy)?.name;
+  return name ? `${name}'s solution` : 'Their solution';
+}
+
 export function HandResultOverlay({
   result,
   state,
+  selfId,
 }: {
   result: HandResultView;
   state: PublicGameState;
+  selfId: string | null;
 }) {
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center bg-paper/95 p-5">
@@ -35,7 +48,9 @@ export function HandResultOverlay({
         <div className="rounded-md bg-paper p-3">
           {result.solvable ? (
             <>
-              <p className="text-xs uppercase tracking-wide text-muted">One solution</p>
+              <p className="text-xs uppercase tracking-wide text-muted">
+                {solutionLabel(result, state, selfId)}
+              </p>
               <p className="mt-1 break-words font-mono text-lg text-ink">
                 {result.solution} = 24
               </p>

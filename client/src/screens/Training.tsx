@@ -125,7 +125,9 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
             <div className="rounded-md bg-paper p-3">
               {state.lastResult.solvable ? (
                 <>
-                  <p className="text-xs uppercase tracking-wide text-muted">One solution</p>
+                  <p className="text-xs uppercase tracking-wide text-muted">
+                    {state.lastResult.ownSolution ? 'Your solution' : 'One solution'}
+                  </p>
                   <p className="mt-1 break-words font-mono text-lg">
                     {state.lastResult.solution} = 24
                   </p>

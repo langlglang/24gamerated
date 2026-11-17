@@ -116,3 +116,33 @@ export function solveValues(values: readonly number[], rules: RuleSet): SolveRes
 export function isSolvable(values: readonly number[], rules: RuleSet): boolean {
   return solveValues(values, rules).solvable;
 }
+
+/**
+ * Render a player's own combine steps as one readable expression, in the same
+ * minimal-parentheses style as the solver. Display text only: correctness is
+ * decided by `validateSteps`. Returns null if the steps do not reduce the
+ * dealt cards to a single card.
+ */
+export function expressionForSteps(
+  cards: readonly Card[],
+  steps: readonly CombineStep[],
+): string | null {
+  const nodes = new Map<string, Node>();
+  for (const card of tableFromCards(cards)) {
+    nodes.set(card.id, { id: card.id, value: card.value, text: String(card.value.n), prec: LEAF_PRECEDENCE });
+  }
+
+  for (const [index, step] of steps.entries()) {
+    const a = nodes.get(step.aId);
+    const b = nodes.get(step.bId);
+    if (!a || !b || a.id === b.id) return null;
+    nodes.delete(a.id);
+    nodes.delete(b.id);
+    const id = derivedId(index);
+    // value is never read when rendering, so carry the left operand's along.
+    nodes.set(id, { id, value: a.value, text: renderCombine(a, step.op, b), prec: OP_PRECEDENCE[step.op] });
+  }
+
+  const [only, ...rest] = [...nodes.values()];
+  return only && rest.length === 0 ? only.text : null;
+}

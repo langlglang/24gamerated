@@ -233,7 +233,7 @@ export function Game({
       </p>
 
       {state.phase === 'hand-result' && state.lastResult && (
-        <HandResultOverlay result={state.lastResult} state={state} />
+        <HandResultOverlay result={state.lastResult} state={state} selfId={selfId} />
       )}
     </div>
   );

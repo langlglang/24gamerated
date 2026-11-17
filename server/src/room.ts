@@ -10,6 +10,7 @@ import {
   applyPoints,
   buildDeck,
   dealMatch,
+  expressionForSteps,
   leaders,
   needsTiebreak,
   resolveBuzz,
@@ -382,7 +383,9 @@ export class Room {
     }
 
     if (resolution.handEnds) {
-      this.endHand(resolution);
+      // Show the buzzer's own route to 24, not whatever the solver found.
+      const text = correct ? expressionForSteps(this.currentCards, this.answerSteps) : null;
+      this.endHand(resolution, text ? { by: buzzerId, text } : null);
       return;
     }
 
@@ -398,10 +401,13 @@ export class Room {
     this.change();
   }
 
-  private endHand(resolution: {
-    points: Readonly<Record<ScoreKey, number>>;
-    note: string;
-  }): void {
+  private endHand(
+    resolution: {
+      points: Readonly<Record<ScoreKey, number>>;
+      note: string;
+    },
+    playerSolution: { by: string; text: string } | null = null,
+  ): void {
     this.clearTimer();
     this.scores = applyPoints(this.scores, resolution.points);
     this.activePlayerId = null;
@@ -411,7 +417,8 @@ export class Room {
       handNumber: this.isTiebreak ? HANDS_PER_MATCH + 1 : this.handIndex + 1,
       cards: this.currentCards,
       solvable: this.currentSolve?.solvable ?? false,
-      solution: this.currentSolve?.expression ?? null,
+      solution: playerSolution?.text ?? this.currentSolve?.expression ?? null,
+      solvedBy: playerSolution?.by ?? null,
       pointsAwarded: resolution.points,
       note: resolution.note,
     };
