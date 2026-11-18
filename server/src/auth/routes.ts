@@ -22,7 +22,7 @@ import {
 import { bearerFrom, issueToken, verifyToken } from './tokens.js';
 
 /** Rated endpoints are unavailable rather than broken when there is no database. */
-function requireDatabase(_req: Request, res: Response, next: NextFunction): void {
+export function requireDatabase(_req: Request, res: Response, next: NextFunction): void {
   if (!isDatabaseConfigured()) {
     res.status(503).json({
       error: 'Accounts are not configured on this server. Guest play is still available.',

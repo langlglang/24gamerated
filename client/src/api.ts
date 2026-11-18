@@ -63,6 +63,10 @@ export function apiGet<T>(path: string, token?: string | null): Promise<ApiResul
   return request<T>(path, { method: 'GET' }, token);
 }
 
+export function apiDelete<T>(path: string, token?: string | null): Promise<ApiResult<T>> {
+  return request<T>(path, { method: 'DELETE' }, token);
+}
+
 export function apiPost<T>(
   path: string,
   body: unknown,

@@ -71,4 +71,31 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS challenges_from_user_idx ON challenges (from_user, status, created_at DESC);
     `,
   },
+  {
+    name: '002_daily_and_friends',
+    sql: `
+      -- One result per player per daily. The primary key is what makes
+      -- "one attempt a day" hold under concurrent submits.
+      CREATE TABLE IF NOT EXISTS daily_results (
+        user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day        date NOT NULL,
+        correct    smallint NOT NULL CHECK (correct BETWEEN 0 AND 13),
+        time_ms    integer NOT NULL CHECK (time_ms >= 0),
+        hands      jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, day)
+      );
+
+      CREATE INDEX IF NOT EXISTS daily_results_day_idx ON daily_results (day);
+
+      -- One-way follows: you choose whose daily results you see.
+      CREATE TABLE IF NOT EXISTS follows (
+        follower   uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        followee   uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (follower, followee),
+        CONSTRAINT follow_not_self CHECK (follower <> followee)
+      );
+    `,
+  },
 ];

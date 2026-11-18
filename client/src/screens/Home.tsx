@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   MAX_FFA_PLAYERS,
+  dailyKey,
+  dailyNumber,
   type GameMode,
   type PublicUserView,
   type RuleSet,
@@ -11,6 +13,7 @@ interface Props {
   onCreate: (name: string, mode: GameMode, rules: RuleSet) => Promise<string | null>;
   onJoin: (name: string, code: string) => Promise<string | null>;
   onTraining: () => void;
+  onDaily: () => void;
   onRanked: () => void;
   connected: boolean;
   user: PublicUserView | null;
@@ -30,6 +33,7 @@ export function Home({
   onCreate,
   onJoin,
   onTraining,
+  onDaily,
   onRanked,
   connected,
   user,
@@ -205,6 +209,9 @@ export function Home({
           onClick={onRanked}
         >
           {user ? 'Play ranked' : 'Sign in to play ranked'}
+        </button>
+        <button type="button" className="btn-secondary h-14 text-lg" onClick={onDaily}>
+          Daily 24 <span className="ml-2 font-normal text-muted">#{dailyNumber(dailyKey())}</span>
         </button>
         <button type="button" className="btn-secondary h-14 text-lg" onClick={() => setView('create')}>
           Play with friends
