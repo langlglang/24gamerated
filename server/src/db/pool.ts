@@ -12,7 +12,7 @@ let pool: pg.Pool | null = null;
 
 function poolMax(): number {
   const n = Number(process.env.DB_POOL_MAX);
-  return Number.isInteger(n) && n >= 1 && n <= 100 ? n : 5;
+  return Number.isInteger(n) && n >= 1 && n <= 100 ? n : 10;
 }
 
 export function getPool(): pg.Pool {
@@ -27,9 +27,9 @@ export function getPool(): pg.Pool {
     pool = new pg.Pool({
       connectionString: url,
       ssl: needsSsl ? { rejectUnauthorized: true } : undefined,
-      // 5 suits a free Neon database (direct connections are scarce). With a
-      // paid plan, or Neon's pooled "-pooler" host in DATABASE_URL, raise it
-      // with DB_POOL_MAX.
+      // 10 fits well inside even the smallest Neon compute (about 100
+      // connections). Bursts of sign-ins or daily solves queue here, so raise it
+      // with DB_POOL_MAX on a bigger plan or with Neon's "-pooler" host.
       max: poolMax(),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,

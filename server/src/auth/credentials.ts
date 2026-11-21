@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { compareInPool, hashInPool } from './hashPool.js';
 
 /**
  * Cost 10 is ~50-80ms per hash on typical hardware: slow enough to make
@@ -7,11 +8,11 @@ import bcrypt from 'bcryptjs';
 export const BCRYPT_ROUNDS = 10;
 
 export function hashPassword(plain: string): Promise<string> {
-  return bcrypt.hash(plain, BCRYPT_ROUNDS);
+  return hashInPool(plain, BCRYPT_ROUNDS);
 }
 
 export function verifyPassword(plain: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(plain, hash);
+  return compareInPool(plain, hash);
 }
 
 /**
@@ -33,7 +34,7 @@ export async function verifyPasswordConstantTime(
   plain: string,
   hash: string | null | undefined,
 ): Promise<boolean> {
-  const ok = await bcrypt.compare(plain, hash ?? DUMMY_HASH);
+  const ok = await compareInPool(plain, hash ?? DUMMY_HASH);
   return hash ? ok : false;
 }
 
