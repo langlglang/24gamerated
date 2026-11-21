@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { describeRules, type RuleSet } from '@24game/shared';
+import { DEFAULT_RULES, describeRules, type RuleSet } from '@24game/shared';
 import { RuleToggles } from '../components/RuleToggles.js';
 import { SoloBoard } from '../components/SoloBoard.js';
 import { useTraining } from '../training.js';
@@ -86,7 +86,7 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
 }
 
 export function Training({ onExit }: { onExit: () => void }) {
-  const [rules, setRules] = useState<RuleSet>({ fractions: true, negatives: true });
+  const [rules, setRules] = useState<RuleSet>(DEFAULT_RULES);
   const [started, setStarted] = useState(false);
 
   if (started) {

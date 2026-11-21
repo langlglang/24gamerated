@@ -2,6 +2,7 @@ import {
   ANSWER_TIMEOUT_MS,
   BUZZ_START_TIMEOUT_MS,
   CARDS_PER_HAND,
+  DEFAULT_RULES,
   HANDS_PER_MATCH,
   HAND_IDLE_TIMEOUT_MS,
   HAND_RESULT_DISPLAY_MS,
@@ -98,7 +99,7 @@ export class Room {
   readonly code: string;
   hostId: string;
   mode: GameMode = 'ffa';
-  rules: RuleSet = { fractions: true, negatives: true };
+  rules: RuleSet = { ...DEFAULT_RULES };
   players: Player[] = [];
 
   phase: Phase = 'lobby';

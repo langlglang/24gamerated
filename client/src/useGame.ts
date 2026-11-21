@@ -22,6 +22,8 @@ interface StoredSession {
   roomCode: string;
   playerId: string;
   name: string;
+  /** Rated seat: rejoin only after the socket has been identified. */
+  rated?: boolean;
 }
 
 function loadSession(): StoredSession | null {
@@ -110,25 +112,31 @@ export function useGame(token: string | null): GameApi {
   const [ratedResult, setRatedResult] = useState<RatedResultView | null>(null);
   const [matchFound, setMatchFound] = useState<GameApi['matchFound']>(null);
 
+  const rejoin = useCallback(
+    (session: StoredSession) => {
+      socket.emit(
+        'room:join',
+        { name: session.name, roomCode: session.roomCode, playerId: session.playerId },
+        (res) => {
+          if (res.ok) setPlayerId(res.playerId);
+          else {
+            saveSession(null);
+            setPlayerId(null);
+            setState(null);
+          }
+        },
+      );
+    },
+    [socket],
+  );
+
   useEffect(() => {
     function onConnect() {
       setConnected(true);
-      // Reclaim the same seat after a refresh or a dropped connection.
+      // Reclaim the same seat after a refresh or a dropped connection. A
+      // rated seat waits for sign-in to be confirmed (see identify below).
       const session = loadSession();
-      if (session) {
-        socket.emit(
-          'room:join',
-          { name: session.name, roomCode: session.roomCode, playerId: session.playerId },
-          (res) => {
-            if (res.ok) setPlayerId(res.playerId);
-            else {
-              saveSession(null);
-              setPlayerId(null);
-              setState(null);
-            }
-          },
-        );
-      }
+      if (session && !session.rated) rejoin(session);
     }
 
     function onDisconnect() {
@@ -169,7 +177,16 @@ export function useGame(token: string | null): GameApi {
       setQueue(IDLE_QUEUE);
       setChallenges([]);
       setRatedResult(null);
-      saveSession(null);
+      // Without our seat id the game can't tell which player we are, and
+      // buzz / no-solution stay disabled. Saving it also lets a refresh
+      // reclaim the seat (the server checks we're the signed-in owner).
+      setPlayerId(payload.playerId);
+      saveSession({
+        roomCode: payload.roomCode,
+        playerId: payload.playerId,
+        name: 'Player',
+        rated: true,
+      });
     });
     socket.on('ratedResult', setRatedResult);
 
@@ -249,7 +266,10 @@ export function useGame(token: string | null): GameApi {
     }
     const identify = () => {
       socket.emit('auth:identify', { token }, (res) => {
-        if (res.ok) setProfile(res.user);
+        if (!res.ok) return;
+        setProfile(res.user);
+        const session = loadSession();
+        if (session?.rated) rejoin(session);
       });
     };
     identify();
@@ -257,7 +277,7 @@ export function useGame(token: string | null): GameApi {
     return () => {
       socket.off('connect', identify);
     };
-  }, [socket, token]);
+  }, [socket, token, rejoin]);
 
   const joinQueue = useCallback(
     () =>
