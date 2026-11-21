@@ -21,6 +21,8 @@ const SESSION_KEY = '24game.session';
 interface StoredSession {
   roomCode: string;
   playerId: string;
+  /** Secret the server issued for this seat; required to reclaim it. */
+  reconnectToken?: string;
   name: string;
   /** Rated seat: rejoin only after the socket has been identified. */
   rated?: boolean;
@@ -137,9 +139,21 @@ export function useGame(token: string | null): GameApi {
     (session: StoredSession) => {
       socket.emit(
         'room:join',
-        { name: session.name, roomCode: session.roomCode, playerId: session.playerId },
+        {
+          name: session.name,
+          roomCode: session.roomCode,
+          playerId: session.playerId,
+          ...(session.reconnectToken ? { reconnectToken: session.reconnectToken } : {}),
+        },
         (res) => {
-          if (res.ok) adoptSeat({ ...session, roomCode: res.roomCode, playerId: res.playerId });
+          if (res.ok) {
+            adoptSeat({
+              ...session,
+              roomCode: res.roomCode,
+              playerId: res.playerId,
+              reconnectToken: res.reconnectToken,
+            });
+          }
           else {
             adoptSeat(null);
             setState(null);
@@ -209,11 +223,24 @@ export function useGame(token: string | null): GameApi {
       adoptSeat({
         roomCode: payload.roomCode,
         playerId: payload.playerId,
+        reconnectToken: payload.reconnectToken,
         name: 'Player',
         rated: true,
       });
     });
-    socket.on('ratedResult', setRatedResult);
+    // Can arrive again after a refresh on the result screen; same match, same result.
+    socket.on('ratedResult', (result) =>
+      setRatedResult((prev) => (prev && prev.matchId === result.matchId ? prev : result)),
+    );
+    socket.on('seatReplaced', () => {
+      // A newer connection (normally this player's other tab) took the seat.
+      // Forget it here, but leave the stored session alone: that tab uses it.
+      setPlayerId(null);
+      currentRoomRef.current = null;
+      setState(null);
+      setMatchFound(null);
+      setNotice('This game continued in another tab.');
+    });
 
     if (socket.connected) onConnect();
 
@@ -230,6 +257,7 @@ export function useGame(token: string | null): GameApi {
       socket.off('challengeUpdated');
       socket.off('ratedMatchFound');
       socket.off('ratedResult');
+      socket.off('seatReplaced');
     };
   }, [socket, rejoin, adoptSeat]);
 
@@ -244,7 +272,7 @@ export function useGame(token: string | null): GameApi {
       new Promise<string | null>((resolve) => {
         socket.emit('room:create', { name, mode, rules }, (res) => {
           if (res.ok) {
-            adoptSeat({ roomCode: res.roomCode, playerId: res.playerId, name });
+            adoptSeat({ roomCode: res.roomCode, playerId: res.playerId, reconnectToken: res.reconnectToken, name });
             resolve(null);
           } else {
             resolve(REJECTION_TEXT[res.error]);
@@ -259,7 +287,7 @@ export function useGame(token: string | null): GameApi {
       new Promise<string | null>((resolve) => {
         socket.emit('room:join', { name, roomCode }, (res) => {
           if (res.ok) {
-            adoptSeat({ roomCode: res.roomCode, playerId: res.playerId, name });
+            adoptSeat({ roomCode: res.roomCode, playerId: res.playerId, reconnectToken: res.reconnectToken, name });
             resolve(null);
           } else {
             resolve(REJECTION_TEXT[res.error]);

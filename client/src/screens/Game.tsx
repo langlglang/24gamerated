@@ -74,8 +74,16 @@ export function Game({
         >
           {won ? 'You win' : 'You lose'}
         </h1>
-        {matchResult.wentToTiebreak && (
-          <p className="-mt-3 text-center text-xs text-muted">Decided in sudden death</p>
+        {matchResult.forfeitedBy ? (
+          <p className="-mt-3 text-center text-sm text-muted">
+            {matchResult.forfeitedBy === selfId
+              ? 'You left the match, so it counts as a loss.'
+              : `${state.players.find((p) => p.id === matchResult.forfeitedBy)?.name ?? 'Your opponent'} left — you win by forfeit.`}
+          </p>
+        ) : (
+          matchResult.wentToTiebreak && (
+            <p className="-mt-3 text-center text-xs text-muted">Decided in sudden death</p>
+          )
         )}
 
         <Scoreboard state={state} selfId={selfId} />
@@ -239,7 +247,7 @@ export function Game({
           <div className="flex flex-col items-center gap-3 text-center">
             <p className="max-w-[20rem] text-sm text-muted">
               {state.rated
-                ? 'If they’re not back within a minute, the match is cancelled. Nobody’s rating changes.'
+                ? 'If they’re not back within a minute, you win by forfeit.'
                 : 'If they’re not back within a minute, the room closes.'}
             </p>
             <button
@@ -293,11 +301,12 @@ export function Game({
       )}
 
       {/*
-        Copy below mirrors what the server's room:leave actually does mid-match:
-        our seat goes offline, the room pauses, and if nobody is back within
-        RECONNECT_GRACE_MS (60 s) the room closes. A rated match that closes
-        this way is never recorded, so nobody's rating moves. The stored
-        session is wiped on leave, so there is no way back into the seat.
+        Copy below mirrors what the server does on room:leave mid-match. Rated:
+        leaving is a forfeit loss, recorded at once (opponent wins, both ratings
+        move). If the opponent is already away when you leave, nothing is
+        recorded (no contest). Guest rooms: the seat goes offline, the room
+        pauses, and closes after RECONNECT_GRACE_MS (60 s). The stored session
+        is wiped on leave, so there is no way back into the seat.
       */}
       <ConfirmDialog
         open={confirmingLeave}
@@ -317,16 +326,15 @@ export function Game({
         {state.rated ? (
           othersAway ? (
             <p>
-              {opponentName} has dropped. If you leave, the match is cancelled within a minute
-              with no result. Neither rating changes.
+              {opponentName} has dropped. Stay, and you win by forfeit if they’re not back within
+              a minute. If you leave now, the match ends with no result and neither rating changes.
             </p>
           ) : (
             <>
               <p>
-                You can’t come back to this match. It pauses for {opponentName}, then is
-                cancelled after 60 seconds with no result. Neither rating changes.
+                Leaving counts as a loss. {opponentName} wins by forfeit and both ratings change.
               </p>
-              <p>You can’t join the ranked queue again until it’s cancelled.</p>
+              <p>You can’t come back to this match.</p>
             </>
           )
         ) : othersAway ? (
