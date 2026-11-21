@@ -11,6 +11,13 @@ export interface AuthApi {
   unavailable: boolean;
   register: (email: string, username: string, password: string) => Promise<string | null>;
   login: (identifier: string, password: string) => Promise<string | null>;
+  /** Email a reset link. Resolves to an error message, or null when sent. */
+  requestReset: (email: string) => Promise<string | null>;
+  /** Set a new password from an emailed token; signs in on success. */
+  resetPassword: (
+    token: string,
+    password: string,
+  ) => Promise<{ error: string; tokenInvalid: boolean } | null>;
   logout: () => void;
   /** Replace the cached user, e.g. after a rated match moves the rating. */
   setUser: (user: PublicUserView | null) => void;
@@ -90,6 +97,29 @@ export function useAuth(): AuthApi {
     [adopt],
   );
 
+  const requestReset = useCallback(async (email: string) => {
+    const result = await apiPost<{ ok: true }>('/api/auth/forgot', { email });
+    if (result.ok) return null;
+    if (result.status === 503) setUnavailable(true);
+    return result.error;
+  }, []);
+
+  const resetPassword = useCallback(
+    async (resetToken: string, password: string) => {
+      const result = await apiPost<AuthResponse>('/api/auth/reset', {
+        token: resetToken,
+        password,
+      });
+      if (result.ok) {
+        adopt(result.data);
+        return null;
+      }
+      // 410: the link itself is spent or expired; anything else is retryable.
+      return { error: result.error, tokenInvalid: result.status === 410 };
+    },
+    [adopt],
+  );
+
   const logout = useCallback(() => {
     saveToken(null);
     setToken(null);
@@ -97,7 +127,18 @@ export function useAuth(): AuthApi {
   }, []);
 
   return useMemo(
-    () => ({ token, user, loading, unavailable, register, login, logout, setUser }),
-    [token, user, loading, unavailable, register, login, logout],
+    () => ({
+      token,
+      user,
+      loading,
+      unavailable,
+      register,
+      login,
+      requestReset,
+      resetPassword,
+      logout,
+      setUser,
+    }),
+    [token, user, loading, unavailable, register, login, requestReset, resetPassword, logout],
   );
 }

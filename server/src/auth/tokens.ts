@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 /**
@@ -34,11 +34,28 @@ function secret(): string {
 export interface SessionClaims {
   userId: string;
   username: string;
+  /**
+   * Fingerprint of the password hash when the token was issued. Changing the
+   * password changes it, which signs out every other session. Absent on
+   * tokens issued before this existed; those are accepted until they expire.
+   */
+  pwv?: string;
 }
 
-export function issueToken(claims: SessionClaims): string {
-  return jwt.sign({ username: claims.username }, secret(), {
-    subject: claims.userId,
+/** Short, one-way fingerprint of a password hash. Never the hash itself. */
+export function passwordVersion(passwordHash: string): string {
+  return createHash('sha256').update(passwordHash).digest('base64url').slice(0, 12);
+}
+
+/** True unless the token predates a password change. */
+export function tokenMatchesPassword(claims: SessionClaims, passwordHash: string): boolean {
+  return claims.pwv === undefined || claims.pwv === passwordVersion(passwordHash);
+}
+
+export function issueToken(user: { id: string; username: string; password_hash: string }): string {
+  const claims = { username: user.username, pwv: passwordVersion(user.password_hash) };
+  return jwt.sign(claims, secret(), {
+    subject: user.id,
     expiresIn: TOKEN_TTL,
   });
 }
@@ -49,9 +66,11 @@ export function verifyToken(token: string | undefined | null): SessionClaims | n
   try {
     const payload = jwt.verify(token, secret());
     if (typeof payload === 'string' || !payload.sub) return null;
+    const pwv = (payload as { pwv?: unknown }).pwv;
     return {
       userId: String(payload.sub),
       username: String((payload as { username?: unknown }).username ?? ''),
+      ...(typeof pwv === 'string' ? { pwv } : {}),
     };
   } catch {
     return null;

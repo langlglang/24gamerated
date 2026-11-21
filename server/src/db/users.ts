@@ -102,7 +102,10 @@ export interface LeaderboardEntry extends PublicUser {
  */
 export async function leaderboard(limit = 25): Promise<LeaderboardEntry[]> {
   const rows = await query<UserRow>(
-    `SELECT ${COLUMNS} FROM users WHERE rated_games > 0
+    // example.test is reserved for test accounts (the smoke scripts use it),
+    // so they never show up on the public board.
+    `SELECT ${COLUMNS} FROM users
+      WHERE rated_games > 0 AND email_lower NOT LIKE '%@example.test'
      ORDER BY rating DESC, rated_games DESC, username ASC LIMIT $1`,
     [limit],
   );

@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { isDatabaseConfigured } from '../db/pool.js';
 import {
@@ -19,7 +20,31 @@ import {
   validateUsername,
   verifyPassword,
 } from './credentials.js';
-import { bearerFrom, issueToken, verifyToken } from './tokens.js';
+import { bearerFrom, issueToken, tokenMatchesPassword, verifyToken } from './tokens.js';
+import { appUrl, sendMail } from './mailer.js';
+import { consumePasswordReset, createPasswordReset } from '../db/resets.js';
+
+/** How long a reset link works. Short, because it is as good as a password. */
+const RESET_TTL_MS = 30 * 60_000;
+
+const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
+
+function resetEmail(username: string, link: string) {
+  const text = [
+    `Hi ${username},`,
+    '',
+    'Someone asked to reset the password for your 24 account. If it was you, open this link within 30 minutes:',
+    '',
+    link,
+    '',
+    'If it wasn’t you, ignore this email. Your password stays the same.',
+  ].join('\n');
+  const html = `<p>Hi ${username},</p>
+<p>Someone asked to reset the password for your 24 account. If it was you, open this link within 30 minutes:</p>
+<p><a href="${link}">Reset your password</a></p>
+<p>If it wasn’t you, ignore this email. Your password stays the same.</p>`;
+  return { subject: 'Reset your 24 password', text, html };
+}
 
 /** Rated endpoints are unavailable rather than broken when there is no database. */
 export function requireDatabase(_req: Request, res: Response, next: NextFunction): void {
@@ -61,6 +86,10 @@ export async function requireAuth(
     res.status(401).json({ error: 'That account no longer exists.' });
     return;
   }
+  if (!tokenMatchesPassword(claims, user.password_hash)) {
+    res.status(401).json({ error: 'Your password was changed. Sign in again.' });
+    return;
+  }
   req.user = user;
   next();
 }
@@ -69,20 +98,29 @@ export async function requireAuth(
  * Crude in-memory login throttle. Not a substitute for a real rate limiter,
  * but enough to make online password guessing impractical on a single box.
  */
-const attempts = new Map<string, { count: number; firstAt: number }>();
+const attempts = new Map<string, { count: number; firstAt: number; windowMs: number }>();
 const ATTEMPT_WINDOW_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 10;
 
-function throttled(key: string): boolean {
+function throttled(key: string, max = MAX_ATTEMPTS, windowMs = ATTEMPT_WINDOW_MS): boolean {
   const now = Date.now();
   const entry = attempts.get(key);
-  if (!entry || now - entry.firstAt > ATTEMPT_WINDOW_MS) {
-    attempts.set(key, { count: 1, firstAt: now });
+  if (!entry || now - entry.firstAt > windowMs) {
+    attempts.set(key, { count: 1, firstAt: now, windowMs });
     return false;
   }
   entry.count += 1;
-  return entry.count > MAX_ATTEMPTS;
+  return entry.count > max;
 }
+
+/** Drop finished windows so the map cannot grow without bound. */
+const throttleSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of attempts) {
+    if (now - entry.firstAt > entry.windowMs) attempts.delete(key);
+  }
+}, 60_000);
+throttleSweep.unref?.();
 
 function clearThrottle(key: string): void {
   attempts.delete(key);
@@ -105,7 +143,7 @@ export function createAuthRouter(): express.Router {
 
     try {
       const user = await createUser(email, username, await hashPassword(password));
-      res.status(201).json({ token: issueToken({ userId: user.id, username: user.username }), user: toPublicUser(user) });
+      res.status(201).json({ token: issueToken(user), user: toPublicUser(user) });
     } catch (err) {
       if (err instanceof DuplicateUserError) {
         res.status(409).json({
@@ -152,10 +190,78 @@ export function createAuthRouter(): express.Router {
 
       clearThrottle(key);
       await touchLastSeen(user.id);
-      res.json({ token: issueToken({ userId: user.id, username: user.username }), user: toPublicUser(user) });
+      res.json({ token: issueToken(user), user: toPublicUser(user) });
     } catch (err) {
       console.error('[auth] login failed:', err);
       res.status(503).json({ error: 'Accounts are temporarily unavailable. Try again shortly.' });
+    }
+  });
+
+  // Always answers the same way whether or not the email has an account, so
+  // this cannot be used to find out who is registered.
+  router.post('/auth/forgot', requireDatabase, async (req, res) => {
+    const email = String(req.body?.email ?? '').trim();
+    const issue = validateEmail(email);
+    if (issue) {
+      res.status(400).json({ error: issue.message, field: 'email' });
+      return;
+    }
+    // Per sender (needs 'trust proxy' so req.ip is the player, not Render's
+    // proxy) and a tighter per-address cap so no inbox can be flooded.
+    const perIp = throttled(`forgot-ip:${req.ip ?? 'unknown'}`, 10, 60 * 60_000);
+    const perEmail = throttled(`forgot-email:${email.toLowerCase()}`, 3, 60 * 60_000);
+    if (perIp || perEmail) {
+      res.status(429).json({ error: 'Too many requests. Wait a while and try again.' });
+      return;
+    }
+
+    // Answer before touching the database or the mail API, so the response
+    // time cannot reveal whether the address has an account.
+    res.json({ ok: true });
+
+    void (async () => {
+      const user = await findByEmail(email);
+      if (!user) return;
+      const base = appUrl();
+      if (!base) {
+        console.error('[auth] APP_URL is not set — cannot build a password reset link');
+        return;
+      }
+      const token = randomBytes(32).toString('base64url');
+      await createPasswordReset(user.id, sha256(token), new Date(Date.now() + RESET_TTL_MS));
+      await sendMail({ to: user.email, ...resetEmail(user.username, `${base}/?reset=${token}`) });
+    })().catch((err) => console.error('[auth] password reset request failed:', err));
+  });
+
+  router.post('/auth/reset', requireDatabase, async (req, res) => {
+    const token = String(req.body?.token ?? '');
+    const password = String(req.body?.password ?? '');
+    if (!token) {
+      res.status(400).json({ error: 'This reset link is incomplete. Request a new one.' });
+      return;
+    }
+    const issue = validatePassword(password);
+    if (issue) {
+      res.status(400).json({ error: issue.message, field: 'password' });
+      return;
+    }
+    try {
+      const user = await consumePasswordReset(sha256(token), await hashPassword(password));
+      if (!user) {
+        // 410 lets the client offer a fresh link only for a dead token.
+        res.status(410).json({
+          error: 'This reset link has expired or was already used. Request a new one.',
+        });
+        return;
+      }
+      await touchLastSeen(user.id);
+      res.json({
+        token: issueToken(user),
+        user: toPublicUser(user),
+      });
+    } catch (err) {
+      console.error('[auth] password reset failed:', err);
+      res.status(503).json({ error: 'Could not reset your password right now. Try again shortly.' });
     }
   });
 

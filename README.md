@@ -65,6 +65,11 @@ To play across devices on your LAN, run `npm run build && npm start` and hit `ht
 
 Sign in, and three things unlock. Everything rated is **1v1 only**.
 
+**Accounts.** Register with an email, a username, and the password typed twice. *Forgot password?*
+emails a reset link that works once, for 30 minutes; opening it shows a *Choose a new password*
+screen and signs you straight in. Email needs `RESEND_API_KEY`, `MAIL_FROM`, and `APP_URL` (see
+[Configuration](#configuration)); in dev without them the link is printed to the server console.
+
 **Ranked queue.** Press *Play ranked* and the matchmaker looks for someone within ±100 rating. The
 window widens by 50 every 5 seconds up to ±1200, and **both** players must find the gap acceptable —
 so a fresh arrival is never dragged into a lopsided game just because someone else has waited a long
@@ -277,6 +282,17 @@ server-side sessions.
 not, so the endpoint cannot be used to enumerate accounts, and repeated failures are throttled per
 IP + identifier.
 
+**Password resets** follow the same rule: `POST /api/auth/forgot` answers identically whether or not
+the email has an account, and replies *before* the lookup and the email send, so response time
+cannot give it away either. It is throttled per IP (10 an hour) and per address (3 an hour); the
+server sets `trust proxy` so the IP is the player's, not Render's proxy. Requesting a new link
+cancels earlier ones. Tokens are 32 random bytes; only their
+SHA-256 is stored (`password_resets`, migration `003_password_resets`, applied on boot), so a
+database leak yields no working links. A token expires after 30 minutes, is spent by
+`POST /api/auth/reset`, and spending one voids every other outstanding link for that account. Links
+are built from `APP_URL`, never from the request's `Host` header, so a forged Host cannot point a
+victim's email at another site.
+
 **Case-insensitive uniqueness for email and username is enforced by unique indexes**, not by app
 code, so two simultaneous signups cannot both succeed.
 
@@ -310,6 +326,22 @@ K-factors, `RATING_FLOOR`); matchmaking bands live in `server/src/matchmaking.ts
 | `PORT` | No | Defaults to 3000. |
 | `NODE_ENV` | No | `production` tightens CORS and requires `JWT_SECRET`. |
 | `DEV_CLIENT_ORIGIN` | No | Vite origin allowed in dev. |
+| `RESEND_API_KEY` | For reset emails | [Resend](https://resend.com) API key. Mail is sent only when this and `MAIL_FROM` are both set. |
+| `MAIL_FROM` | For reset emails | Sender, e.g. `24 Rated <no-reply@yourdomain.com>`, on a domain verified in Resend. |
+| `APP_URL` | **In production** | Public base URL for links in emails, e.g. `https://two4gamerated.onrender.com`. Dev falls back to the Vite origin. |
+
+Without mail configured, development prints each email (link included) to the server console.
+Production sends nothing and logs an error, but `/api/auth/forgot` still answers the same way, so
+the gap is invisible to players — check the logs after setting it up.
+
+### Setting up email
+
+1. Create an account at [Resend](https://resend.com) and an API key with sending access.
+2. Verify a sending domain (Resend → Domains, then add the DNS records it lists). For a quick test,
+   Resend's onboarding sender `onboarding@resend.dev` works without a domain, but only delivers to
+   your own Resend account address.
+3. On Render, set `RESEND_API_KEY`, `MAIL_FROM`, and `APP_URL` in the service's **Environment**
+   tab and redeploy.
 
 ---
 
@@ -321,6 +353,12 @@ npm run build && npm start      # terminal 1
 npm run smoke                   # terminal 2 — guest play
 node scripts/smoke-rated.mjs    # terminal 2 — rated play (needs DATABASE_URL)
 ```
+
+> **Never run the rated smoke test against the production database.** It creates real accounts and
+> real rated matches in whatever `DATABASE_URL` the server uses. If your `.env` holds the production
+> Neon string, a local run writes test accounts into production — that is how `smoke_a_…` /
+> `smoke_b_…` accounts ended up on the live leaderboard. Point the server at a separate database
+> first: a [Neon branch](https://neon.tech/docs/introduction/branching) or a local Postgres.
 
 Unit tests cover exact rational arithmetic, the solver under **all four rule combinations**, the
 validator's rejection paths (division by zero, non-integer with fractions OFF, negative with
@@ -338,7 +376,8 @@ duplicate usernames rejected, wrong passwords rejected, match history requires a
 challenge reaches the target and starts a match, the matchmaker pairs two queued players, a full
 13-hand ranked match runs, and the resulting Elo change is non-zero, zero-sum, correctly signed, and
 written through to `/api/auth/me`, match history, and the leaderboard. It leaves its test accounts
-behind on purpose.
+behind on purpose. They use `@example.test` emails, which the public leaderboard filters out — a
+safety net, not a reason to aim it at production.
 
 ---
 
@@ -371,6 +410,8 @@ everywhere:
 2. Push to GitHub.
 3. Render dashboard → **New → Blueprint** → pick the repo → **Apply**.
 4. Render prompts for **`DATABASE_URL`** — paste the Neon string. It generates `JWT_SECRET` itself.
+   It also asks for `RESEND_API_KEY`, `MAIL_FROM`, and `APP_URL`; leave them blank to skip reset
+   emails for now (see [Setting up email](#setting-up-email)).
 5. Wait for the first build, then open the `*.onrender.com` URL.
 
 Migrations run automatically on boot, so there is no separate deploy step for the schema.
@@ -397,9 +438,11 @@ Render injects `PORT`; the server already reads it.
   the reconnect grace the room closes — but with no `match-result` there is no Elo change either, so
   a player losing badly can currently rage-quit to avoid the loss. Fixing it properly means deciding
   what an abandonment is worth, which is a game-design call rather than a bug.
-- **Sessions cannot be revoked** before their 30-day expiry, since they are stateless JWTs.
-- **No password reset.** Emails are collected so it can be added, but there is no mail service
-  wired up, so a forgotten password currently needs a new account.
+- **Sessions cannot be revoked individually** before their 30-day expiry, since they are stateless
+  JWTs. Changing the password does sign out every other session: each token carries a short
+  fingerprint of the password hash (`pwv`), checked on REST calls and socket sign-in. A socket
+  that is already connected keeps its session until it reconnects. Tokens issued before this
+  shipped have no fingerprint and stay valid until they expire.
 - **No email verification**, so signups are not proof of a real address.
 - **The queue is per-instance.** Two instances would maintain two separate queues that never see
   each other — another reason for the single-instance rule.
