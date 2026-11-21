@@ -211,7 +211,7 @@ export function Home({
           {user ? 'Play ranked' : 'Sign in to play ranked'}
         </button>
         <button type="button" className="btn-secondary h-14 text-lg" onClick={onDaily}>
-          Daily 24 <span className="ml-2 font-normal text-muted">#{dailyNumber(dailyKey())}</span>
+          Daily puzzle <span className="ml-2 font-normal text-muted">#{dailyNumber(dailyKey())}</span>
         </button>
         <button type="button" className="btn-secondary h-14 text-lg" onClick={() => setView('create')}>
           Play with friends
