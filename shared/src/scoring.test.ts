@@ -128,3 +128,43 @@ describe('scoreboard helpers', () => {
     expect(needsTiebreak({ a: 3, b: 3 })).toBe(true);
   });
 });
+
+describe('score maps are safe for any player id', () => {
+  const NASTY = ['__proto__', 'constructor', 'toString', 'hasOwnProperty'];
+
+  it('credits a player whose id is __proto__ or another Object.prototype name', () => {
+    for (const id of NASTY) {
+      const r = resolveBuzz(ffa([id, 'bob'], true), id, true);
+      const scores = applyPoints({}, r.points);
+      expect(Object.hasOwn(scores, id)).toBe(true);
+      expect(scores[id]).toBe(1);
+      expect(Object.keys(scores)).toEqual([id]);
+    }
+  });
+
+  it('pays everyone still in when one of them is __proto__', () => {
+    const r = resolveBuzz(ffa(['alice', '__proto__', 'cara'], false), 'alice', false);
+    const scores = applyPoints({}, r.points);
+    expect(Object.keys(scores).sort()).toEqual(['__proto__', 'cara']);
+    expect(leaders(scores).sort()).toEqual(['__proto__', 'cara']);
+  });
+
+  it('accumulates onto an existing __proto__ score without touching the prototype', () => {
+    let scores = applyPoints({}, resolveBuzz(ffa(['__proto__', 'bob'], true), '__proto__', true).points);
+    scores = applyPoints(scores, resolveBuzz(ffa(['__proto__', 'bob'], true), '__proto__', true).points);
+    expect(scores['__proto__']).toBe(2);
+    expect(Object.getPrototypeOf(scores)).toBe(null);
+    expect(needsTiebreak(applyPoints(scores, { bob: 2 }))).toBe(true);
+  });
+
+  it('does not treat an inherited name as a team assignment', () => {
+    const ctx: HandScoringContext = {
+      mode: 'p4team',
+      playerIds: ['a', 'b', 'c', 'constructor'],
+      teamOf: { a: 'A', b: 'A', c: 'B' },
+      solvable: true,
+      lockedOut: [],
+    };
+    expect(() => resolveBuzz(ctx, 'constructor', true)).toThrow(/no team/);
+  });
+});
