@@ -9,6 +9,10 @@ describe('daily keys', () => {
     expect(previousDailyKey('2026-12-01')).toBe('2026-11-30');
     expect(isDailyKey('2026-11-17')).toBe(true);
     expect(isDailyKey('2026-02-30')).toBe(false);
+    // Impossible months/days used to throw (and crash the server) instead of returning false.
+    for (const bad of ['2026-13-01', '2026-11-32', '2026-00-10', '9999-99-99']) {
+      expect(isDailyKey(bad)).toBe(false);
+    }
     expect(isDailyKey('nope')).toBe(false);
   });
 
