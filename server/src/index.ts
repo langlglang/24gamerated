@@ -77,6 +77,20 @@ function sessionOf(socketId: string): SocketSession {
   return sessions.get(socketId) ?? {};
 }
 
+/**
+ * Handshake sign-ins still being checked, by the user id their token claims.
+ * A user who just connected is not "online" until the check passes, so
+ * anything that needs them online waits for these first.
+ */
+const pendingSignIns = new Map<string, Set<Promise<void>>>();
+
+async function settledOnline(userId: string): Promise<boolean> {
+  if (online.has(userId)) return true;
+  const pending = pendingSignIns.get(userId);
+  if (pending) await Promise.all([...pending]);
+  return online.has(userId);
+}
+
 function addOnline(userId: string, socketId: string): void {
   const list = (online.get(userId) ?? []).filter((id) => id !== socketId);
   list.push(socketId);
@@ -190,6 +204,7 @@ async function persistRatedMatch(room: Room, outcome: RatedMatchOutcome): Promis
       scoreA: outcome.scoreA,
       scoreB: outcome.scoreB,
       wentToTiebreak: outcome.wentToTiebreak,
+      forfeitedBy: outcome.forfeitedBy,
     });
     const rowA = { id: outcome.playerAId, username: recorded.usernameA };
     const rowB = { id: outcome.playerBId, username: recorded.usernameB };
@@ -203,6 +218,7 @@ async function persistRatedMatch(room: Room, outcome: RatedMatchOutcome): Promis
         matchId: recorded.matchId,
         kind: outcome.kind,
         result: recorded.winnerId === null ? 'draw' : recorded.winnerId === selfId ? 'win' : 'loss',
+        forfeit: outcome.forfeitedBy !== null,
         you: selfChange,
         opponent: other,
       };
@@ -334,9 +350,11 @@ const failedJoinsPerSocket = new SlidingWindowLimiter(10, 60_000);
 const failedJoinsPerIp = new SlidingWindowLimiter(60, 60_000);
 const createsPerSocket = new SlidingWindowLimiter(10, 60_000);
 const createsPerIp = new SlidingWindowLimiter(120, 60_000);
-// Challenges push a notification to someone else, so they are capped per user.
+// Challenges push a notification to someone else, so those pushes are capped
+// per sender. Every attempt (typos, offline targets) has a looser cap too.
 const challengeBurst = new SlidingWindowLimiter(5, 30_000);
 const challengeHourly = new SlidingWindowLimiter(20, 10 * 60_000);
+const challengeAttempts = new SlidingWindowLimiter(30, 60_000);
 
 /**
  * The client address. Behind the one proxy `trust proxy` assumes in
@@ -371,7 +389,7 @@ io.on('connection', (socket) => {
   if (typeof handshakeToken === 'string' && isDatabaseConfigured()) {
     const claims = verifyToken(handshakeToken);
     if (claims) {
-      identitySettled = (async () => {
+      const check = (async () => {
         try {
           const row = await findById(claims.userId);
           if (!socket.connected) return;
@@ -383,6 +401,14 @@ io.on('connection', (socket) => {
           console.error('[auth] handshake sign-in failed:', err);
         }
       })();
+      const set = pendingSignIns.get(claims.userId) ?? new Set<Promise<void>>();
+      set.add(check);
+      pendingSignIns.set(claims.userId, set);
+      void check.finally(() => {
+        set.delete(check);
+        if (set.size === 0 && pendingSignIns.get(claims.userId) === set) pendingSignIns.delete(claims.userId);
+      });
+      identitySettled = check;
     }
   }
 
@@ -615,6 +641,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('auth:signOut', () => {
+    // Signing out mid rated match leaves it (a forfeit loss): the seat is
+    // the account's, and this socket no longer speaks for that account.
+    {
+      const current = sessionOf(socket.id);
+      const room = current.roomCode ? manager.get(current.roomCode) : undefined;
+      if (room?.rated && !room.finished) leaveCurrentRoom(socket.id);
+    }
     const { userId, roomCode, playerId } = sessionOf(socket.id);
     if (userId) {
       // Only this tab's search ends; another tab's stays queued.
@@ -688,7 +721,7 @@ io.on('connection', (socket) => {
       ack({ ok: false, error: guard.error });
       return;
     }
-    if (!challengeBurst.hit(guard.userId) || !challengeHourly.hit(guard.userId)) {
+    if (!challengeAttempts.hit(guard.userId)) {
       ack({ ok: false, error: 'rate-limited' });
       return;
     }
@@ -707,7 +740,7 @@ io.on('connection', (socket) => {
           ack({ ok: false, error: 'cannot-challenge-self' });
           return;
         }
-        if (!online.has(target.id)) {
+        if (!(await settledOnline(target.id))) {
           ack({ ok: false, error: 'opponent-offline' });
           return;
         }
@@ -715,7 +748,17 @@ io.on('connection', (socket) => {
           ack({ ok: false, error: 'opponent-busy' });
           return;
         }
-        const challenge = await createChallenge(guard.userId, target.id);
+        // New challenges are capped; re-sending one that is still pending
+        // just re-notifies (and only counts as an attempt).
+        if (challengeBurst.blocked(guard.userId) || challengeHourly.blocked(guard.userId)) {
+          ack({ ok: false, error: 'rate-limited' });
+          return;
+        }
+        const { challenge, created } = await createChallenge(guard.userId, target.id);
+        if (created) {
+          challengeBurst.hit(guard.userId);
+          challengeHourly.hit(guard.userId);
+        }
         emitToUser(target.id, 'challengeIncoming', challenge);
         ack({ ok: true, challenge });
       } catch (err) {
@@ -771,7 +814,7 @@ io.on('connection', (socket) => {
           ack({ ok: false, error: 'opponent-busy' });
           return;
         }
-        if (!online.has(challenge.fromUserId)) {
+        if (!(await settledOnline(challenge.fromUserId))) {
           const expired = await resolveChallenge(id, 'expired');
           if (expired) emitToUser(challenge.fromUserId, 'challengeUpdated', expired);
           ack({ ok: false, error: 'opponent-offline' });
