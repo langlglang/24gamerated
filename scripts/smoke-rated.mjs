@@ -9,6 +9,12 @@
  * match, then plays a full 13-hand ranked match and checks that Elo moved,
  * was zero-sum, and landed in match history and the leaderboard.
  *
+ * It also covers the multi-tab / one-live-game rules: a refresh on the result
+ * screen gets the rating result again, a finished rated room does not block
+ * queueing, a guest seat does, closing another tab keeps the queue entry, a
+ * double-tapped accept starts one match, and busy players cannot be challenged.
+ * Finally, leaving a rated match mid-way loses it by forfeit.
+ *
  * The accounts it creates are left behind on purpose — deleting them would
  * need a destructive query this script has no business running.
  */
@@ -48,7 +54,7 @@ async function makeAccount(tag) {
 
 function connect(token) {
   return new Promise((resolve, reject) => {
-    const socket = io(URL, { transports: ['websocket'], auth: { token } });
+    const socket = io(URL, { transports: ['websocket'], auth: { token }, forceNew: true });
     socket.on('connect', () => resolve(socket));
     socket.on('connect_error', reject);
   });
@@ -221,6 +227,100 @@ async function main() {
   check('the leaderboard answers', Array.isArray(board.body.entries));
   check('test accounts are hidden from the leaderboard', listed === false);
 
+  // ------------------------------------------- refresh, busy and tab rules
+  // A refresh on the result screen: a new socket reclaims the finished seat
+  // and gets the rating result again.
+  const aliceTab2 = await connect(alice.token);
+  const resent = waitFor(aliceTab2, 'ratedResult', () => true, 5_000, 'resent rated result').catch(() => null);
+  const rejoin = await emit(aliceTab2, 'room:join', {
+    name: alice.username,
+    roomCode: aliceMatch.roomCode,
+    playerId: alice.user.id,
+  });
+  check('a refresh can reclaim the finished rated seat', rejoin.ok === true, rejoin.error);
+  const again = await resent;
+  check('the rating result is sent again after a refresh', again?.matchId === aliceResult.matchId);
+
+  // A finished rated room is only a result screen: it does not block queueing.
+  const requeue = await emit(aliceTab2, 'queue:join');
+  check('a finished rated match does not block the queue', requeue.ok === true, requeue.error);
+
+  // Closing a different tab must not drop the search this tab started.
+  const aliceTab3 = await connect(alice.token);
+  await new Promise((r) => setTimeout(r, 300));
+  aliceTab3.close();
+  await new Promise((r) => setTimeout(r, 300));
+  const stillQueued = await emit(aliceTab2, 'queue:join');
+  check('closing another tab keeps the queue entry', stillQueued.error === 'already-queued', stillQueued.error);
+  aliceTab2.emit('queue:leave');
+  await new Promise((r) => setTimeout(r, 200));
+
+  // A guest seat (random seat id) still counts as being in a game.
+  const guest = await emit(aliceTab2, 'room:create', {
+    name: 'Alice',
+    mode: 'ffa',
+    rules: { fractions: false, negatives: false },
+  });
+  check('room:create returns a reconnect token', typeof guest.reconnectToken === 'string' && guest.reconnectToken.length >= 20);
+  const guestQueue = await emit(aliceTab2, 'queue:join');
+  check('you cannot queue while seated in a guest room', guestQueue.error === 'already-in-room', guestQueue.error);
+  aliceTab2.emit('room:leave');
+
+  // Malformed ids are a clean "not found", not a database error.
+  const badId = await emit(aliceTab2, 'challenge:respond', { id: 'not-a-uuid', accept: true });
+  check('a malformed challenge id is not found', badId.error === 'challenge-not-found', badId.error);
+
+  // A double-tapped accept starts exactly one match.
+  const erin = await makeAccount('e');
+  const frank = await makeAccount('f');
+  const erinSocket = await connect(erin.token);
+  const frankSocket = await connect(frank.token);
+  const erinFound = [];
+  erinSocket.on('ratedMatchFound', (m) => erinFound.push(m.roomCode));
+  const frankInvite = waitFor(frankSocket, 'challengeIncoming');
+  await emit(erinSocket, 'challenge:send', { username: frank.username });
+  const inv = await frankInvite;
+  const taps = await Promise.all([
+    emit(frankSocket, 'challenge:respond', { id: inv.id, accept: true }),
+    emit(frankSocket, 'challenge:respond', { id: inv.id, accept: true }),
+  ]);
+  await new Promise((r) => setTimeout(r, 500));
+  check('a double-tapped accept starts one match', taps.filter((t) => t.ok).length === 1 && erinFound.length === 1, JSON.stringify(taps));
+
+  // Erin is now in a live match, so nobody can challenge her into a second.
+  const busy = await emit(aliceTab2, 'challenge:send', { username: erin.username });
+  check('a player in a live match cannot be challenged', busy.error === 'opponent-busy', busy.error);
+  const busyQueue = await emit(erinSocket, 'queue:join');
+  check('a player in a live match cannot queue', busyQueue.error === 'already-in-room', busyQueue.error);
+
+  // ---------------------------------------------------------------- forfeit
+  // Leaving a rated match mid-way is a loss; the player who stayed wins at once.
+  const gina = await makeAccount('g');
+  const hank = await makeAccount('h');
+  const ginaSocket = await connect(gina.token);
+  const hankSocket = await connect(hank.token);
+  const hankInvite = waitFor(hankSocket, 'challengeIncoming');
+  await emit(ginaSocket, 'challenge:send', { username: hank.username });
+  const ginaInvite = await hankInvite;
+  const ginaFound = waitFor(ginaSocket, 'ratedMatchFound');
+  const firstHand = waitFor(hankSocket, 'state', (st) => st.phase === 'open', 10_000, 'first hand');
+  await emit(hankSocket, 'challenge:respond', { id: ginaInvite.id, accept: true });
+  await ginaFound;
+  await firstHand;
+  const hankResult = waitFor(hankSocket, 'ratedResult', () => true, 10_000, 'forfeit result (winner)');
+  const ginaResult = waitFor(ginaSocket, 'ratedResult', () => true, 10_000, 'forfeit result (leaver)');
+  const hankFinal = waitFor(hankSocket, 'state', (st) => st.phase === 'match-result', 10_000, 'match-result');
+  ginaSocket.emit('room:leave');
+  const [hr, gr, hf] = await Promise.all([hankResult, ginaResult, hankFinal]);
+  check('the player who stayed wins by forfeit', hr.result === 'win' && hr.forfeit === true, `${hr.result} forfeit=${hr.forfeit}`);
+  check('the player who left loses by forfeit', gr.result === 'loss' && gr.forfeit === true && gr.you.delta < 0);
+  check('the result screen names the leaver', hf.matchResult?.forfeitedBy === gina.user.id && hf.matchResult?.winners?.[0] === hank.user.id);
+  const hankHistory = await api('/api/me/matches', { token: hank.token });
+  check('exactly one match row, marked as a forfeit', hankHistory.body.matches?.length === 1 && hankHistory.body.matches[0].forfeit === true && hankHistory.body.matches[0].result === 'win');
+  const hankMe = await api('/api/auth/me', { token: hank.token });
+  check('the winner rating moved', hankMe.body.user?.rating === hr.you.after && hr.you.delta > 0);
+
+  for (const sock of [aliceTab2, erinSocket, frankSocket, ginaSocket, hankSocket]) sock.close();
   aliceSocket.close();
   bobSocket.close();
 
