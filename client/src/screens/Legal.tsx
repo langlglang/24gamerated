@@ -1,12 +1,11 @@
 /**
  * Privacy policy and terms. Written to match what the code actually does
- * (see the README). TEMPLATE: fill in the [BRACKETED] details and have the text
- * reviewed before relying on it. This is not legal advice.
+ * (see the README). Keep it in sync when data handling changes, and have it
+ * reviewed when you can; this is not legal advice.
  */
-const CONTACT = '[CONTACT EMAIL]';
-const OPERATOR = '[YOUR NAME OR ORGANISATION]';
-const EFFECTIVE = '[DATE]';
-const LAW = '[STATE / COUNTRY]';
+const CONTACT = 'support@24game.online';
+const OPERATOR = 'the 24game.online team';
+const EFFECTIVE = 'November 21, 2026';
 
 function Back({ onHome }: { onHome: () => void }) {
   return (
@@ -162,10 +161,8 @@ function Terms() {
           losses from using the game.
         </p>
       </Section>
-      <Section title="Contact and law">
-        <p>
-          Questions: {CONTACT}. These terms are governed by the laws of {LAW}.
-        </p>
+      <Section title="Contact">
+        <p>Questions about these terms: {CONTACT}.</p>
       </Section>
     </>
   );
