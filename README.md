@@ -79,7 +79,8 @@ time. A quiet queue still matches eventually.
 immediately. Challenges are rated exactly like ranked games; they just skip the queue. The target
 has to be online and not already in a game, and unanswered invites expire after 10 minutes (checked
 when someone answers, not just by the periodic sweep). New challenges are limited to 5 per 30 s and
-20 per 10 minutes per sender (attempts of any kind, re-sends included, to 30 a minute), and there is at most one pending challenge per pair of players.
+20 per 10 minutes per sender (refused with `rate-limited` while the cap is reached), and attempts of
+any kind to 30 a minute, and there is at most one pending challenge per pair of players.
 Accepting claims the challenge in the database first, so a double tap or two tabs start one match.
 
 **Ratings.** Standard Elo, starting at **1200**:
