@@ -67,7 +67,15 @@ const CHECKS: Readonly<Record<string, Check>> = {
 /** True when an incoming event has the arguments its handler expects. */
 export function isWellFormed(event: unknown, args: unknown[]): boolean {
   if (!isString(event)) return false;
+  // Own keys only: an event named '__proto__' or 'hasOwnProperty' would
+  // otherwise find Object.prototype members, and calling one threw inside
+  // Socket.IO's packet handling and took the whole server down.
+  if (!Object.hasOwn(CHECKS, event)) return true; // nobody listens; Socket.IO ignores it
   const check = CHECKS[event];
-  // Events nobody listens for are harmless; let Socket.IO ignore them.
-  return check ? check(args) : true;
+  if (typeof check !== 'function') return false;
+  try {
+    return check(args);
+  } catch {
+    return false;
+  }
 }
