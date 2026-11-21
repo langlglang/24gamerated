@@ -5,6 +5,7 @@ import {
   dailyPuzzle,
   fasterThanPct,
   puzzleCardCount,
+  puzzleShareText,
   reachableValues,
 } from './puzzle.js';
 import { tableFromCards } from './validator.js';
@@ -84,9 +85,51 @@ describe('distribution helpers', () => {
     expect(b.reduce((s, x) => s + x.count, 0)).toBe(times.length);
     expect(bucketSolveTimes([])).toEqual([]);
   });
+  it('puts a time exactly on a bucket edge in the bucket that starts there', () => {
+    // Every reported edge, and one ms either side, must land in the bucket whose
+    // [fromMs, toMs) contains it (the last bucket also owns its upper edge).
+    for (const base of [
+      [3000, 100_000],
+      [3000, 86_400_000],
+      [4321, 9876],
+      [12_345, 3_600_000],
+    ]) {
+      const b = bucketSolveTimes(base);
+      const probes = b.flatMap((x) => [x.fromMs - 1, x.fromMs, x.fromMs + 1, x.toMs - 1, x.toMs]);
+      for (const t of probes) {
+        if (t < b[0]!.fromMs || t > b[b.length - 1]!.toMs) continue;
+        const withT = bucketSolveTimes([...base, t]);
+        // Same min/max, so the same edges.
+        expect(withT.map((x) => [x.fromMs, x.toMs])).toEqual(b.map((x) => [x.fromMs, x.toMs]));
+        const placed = withT.findIndex((x, i) => x.count !== b[i]!.count);
+        const bucket = withT[placed]!;
+        const last = placed === withT.length - 1;
+        expect(t >= bucket.fromMs && (t < bucket.toMs || (last && t === bucket.toMs))).toBe(true);
+      }
+    }
+  });
+  it('clamps times outside the edges into the end buckets', () => {
+    const b = bucketSolveTimes([1000, 3000, 60_000], 6); // 1000 is below the 3 s floor
+    expect(b[0]!.count).toBe(2);
+    expect(b[5]!.count).toBe(1);
+  });
   it('computes faster-than percent against the others', () => {
-    expect(fasterThanPct(5000, [5000])).toBe(100);
+    // Nobody else solved: there is no percentage to show.
+    expect(fasterThanPct(5000, [5000])).toBeNull();
+    expect(fasterThanPct(5000, [])).toBeNull();
     expect(fasterThanPct(5000, [5000, 6000, 7000, 4000, 9000])).toBe(75);
     expect(fasterThanPct(9000, [5000, 9000])).toBe(0);
+    // A test account comparing against exactly one real solver.
+    expect(fasterThanPct(4000, [9000, 4000])).toBe(100);
+  });
+  it('leaves the percentage out of the share text when there is none', () => {
+    expect(puzzleShareText({ number: 5, target: 321 }, 65_000, null)).toBe('24 Daily #5 · 321 ✓ 1:05\n24game.online');
+    expect(puzzleShareText({ number: 5, target: 321 }, 65_000, 40)).toContain('(faster than 40%)');
+  });
+  it('rejects invalid day keys instead of producing NaN', () => {
+    for (const bad of ['garbage', '2026-02-30', '2026-13-01', '']) {
+      expect(() => dailyPuzzle(bad)).toThrow(RangeError);
+      expect(() => puzzleCardCount(bad)).toThrow(RangeError);
+    }
   });
 });

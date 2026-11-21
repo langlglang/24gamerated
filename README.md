@@ -116,20 +116,38 @@ One puzzle a day, the same for everyone. Solve time is the only measure.
   always reachable but has only a few solutions. A new puzzle arrives at midnight UTC.
 - **Unlimited retries.** Wrong answers cost nothing but time. There is no score beyond the time.
 - **The curve.** After solving you see a distribution curve of everyone's solve times for the day
-  (log-scale buckets), the median, and the share of other solvers you were faster than.
-- **Server-measured time.** When a signed-in player fetches the puzzle, the server records when
-  they first opened it (`daily_starts`). On solve, if that start exists, the stored time is the
-  server's elapsed time since then — the client's claimed time is ignored. Only when there is no
-  start (solved as a guest, then signed in) is the claimed time used. Under 3 s is rejected.
-  The first correct solve stands.
-- **Test accounts** (`@example.test`) are left out of the curve and solver count; they still see
-  where their own time would place.
+  (log-scale buckets; a time on a bucket edge belongs to the bucket that starts there), the median,
+  and the share of other solvers you were faster than. With nobody else in the pool there is no
+  percentage: the screen says you're the first to solve and the share text leaves it out.
+- **Server-measured time, always.** Every `GET /api/daily/puzzle`, guest or signed in, returns a
+  `startTicket`: an HMAC (key derived from `JWT_SECRET`) over the day and the issue time
+  (`server/src/daily/ticket.ts`). The client keeps the first ticket of the day with its local run
+  and sends it with the solve. A signed-in fetch also records when the account first opened the
+  puzzle (`daily_starts`). On solve, the stored time is now minus the earliest trustworthy start:
+  the earlier of the account's recorded start and a valid ticket's issue time for that day. The
+  client's claimed `timeMs` is ignored. Because the ticket travels with the run, a guest who signs in
+  halfway through is timed from when they really began. A guest who finishes posts the solve to
+  `POST /api/daily/guest-solve`, which checks it and returns a signed receipt (start and finish);
+  after signing in the client posts that receipt (before its signed-in fetch), and the stored time
+  ends at the receipt's finish, so time spent on the sign-in form doesn't count.
+- **No start, no count.** With neither a recorded start nor a valid ticket for that day, the solve is
+  refused (400, `code: 'no-start'`) and not stored, so it never reaches the curve. Under 3 s of
+  server-measured time is refused (`code: 'too-fast'`; the client may retry, which only measures
+  longer); over 24 h (only possible on yesterday's puzzle) is recorded as 24 h. The first correct
+  solve stands.
+- **Never cached.** Puzzle responses are `Cache-Control: private, no-store` (each carries its own
+  ticket, and a cached copy could outlive midnight UTC); the client fetches with `cache: 'no-store'`.
+- **Test accounts** (`@example.test`, any subdomain, trailing dot allowed) are left out of the curve
+  and solver count; they still see where their own time would place.
 
-API: `GET /api/daily/puzzle` (no account needed; with a bearer token it also starts your clock),
-`POST /api/daily/solve` (account; today's or yesterday's puzzle; body `{ day, steps, timeMs }`),
-`GET /api/daily/stats?day=` (public; includes your own time and faster-than % when signed in).
-Tables: `daily_solves` (migration `004`) and `daily_starts` (migration `005`). The old 13-hand
-daily's `daily_results` and `follows` tables are left in place, unused.
+API: `GET /api/daily/puzzle` (no account needed; returns `{ day, number, cards, target, startTicket }`;
+with a bearer token it also starts your account's clock), `POST /api/daily/solve` (account; today's
+or yesterday's puzzle; body `{ day, steps, startTicket, solveReceipt? }`; refusals carry `code`: `closed`,
+`bad-steps`, `not-target`, `no-start` are final, `too-fast` is not), `GET /api/daily/stats?day=`
+(public; includes your own time and faster-than % when signed in, `fasterThanPct: null` when nobody
+else has solved), `POST /api/daily/guest-solve` (no account; body `{ day, steps, startTicket }`;
+returns `{ timeMs, solveReceipt }`; stores nothing). Tables: `daily_solves` (migration `004`) and `daily_starts` (migration `005`).
+The old 13-hand daily's `daily_results` and `follows` tables are left in place, unused.
 
 ## Layout
 

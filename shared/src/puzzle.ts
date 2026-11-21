@@ -1,5 +1,5 @@
 import type { Card, Suit } from './cards.js';
-import { seededRandom, dailyNumber } from './daily.js';
+import { assertDailyKey, seededRandom, dailyNumber } from './daily.js';
 import { equals, rational } from './rational.js';
 import type { CombineStep, RuleSet } from './types.js';
 import { applyCombine, tableFromCards } from './validator.js';
@@ -40,8 +40,9 @@ export interface DailyPuzzle {
   readonly ways: number;
 }
 
-/** 5 cards Mon–Thu, 6 Fri–Sun (UTC). */
+/** 5 cards Mon–Thu, 6 Fri–Sun (UTC). Throws on an invalid day key. */
 export function puzzleCardCount(day: string): 5 | 6 {
+  assertDailyKey(day);
   const weekday = new Date(`${day}T00:00:00Z`).getUTCDay(); // 0 = Sunday
   return weekday === 0 || weekday >= 5 ? 6 : 5;
 }
@@ -121,8 +122,13 @@ function remember(day: string, puzzle: DailyPuzzle): void {
   }
 }
 
-/** The puzzle for a UTC day ("YYYY-MM-DD"). Deterministic; cached. */
+/**
+ * The puzzle for a UTC day ("YYYY-MM-DD"). Deterministic; cached.
+ * Throws a RangeError on an invalid day key (callers validate request input
+ * with isDailyKey first; this is the backstop so 'garbage' never yields NaN).
+ */
 export function dailyPuzzle(day: string): DailyPuzzle {
+  assertDailyKey(day);
   const hit = cache.get(day);
   if (hit) return hit;
 
@@ -184,7 +190,42 @@ export interface DailyPuzzleView {
   readonly number: number;
   readonly cards: readonly Card[];
   readonly target: number;
+  /**
+   * Server-signed proof of when this copy of the puzzle was handed out
+   * (HMAC over day + issue time). The client keeps the first one it got for
+   * the day and sends it back with the solve; the server times the solve
+   * from it. Opaque to the client.
+   */
+  readonly startTicket: string;
 }
+
+/** Body of POST /api/daily/solve. `timeMs` is informational only: the server measures the time. */
+export interface DailySolveRequest {
+  readonly day: string;
+  readonly steps: readonly CombineStep[];
+  readonly startTicket?: string | null;
+  /** From POST /api/daily/guest-solve: fixes the finish time of a solve made before signing in. */
+  readonly solveReceipt?: string | null;
+  readonly timeMs?: number;
+}
+
+/**
+ * POST /api/daily/guest-solve (no account) checks a guest's solve and stamps
+ * when it happened. Posting the receipt after signing in records that time, so
+ * the minutes spent on the sign-in form don't count.
+ */
+export interface DailyGuestSolveResponse {
+  readonly timeMs: number;
+  readonly solveReceipt: string;
+}
+
+/** Machine-readable reason on a refused daily solve, so a client knows whether retrying can help. */
+export type DailySolveErrorCode =
+  | 'closed' // not today's or yesterday's puzzle: permanent
+  | 'bad-steps' // unreadable solution: permanent
+  | 'not-target' // doesn't reach the target: permanent
+  | 'no-start' // no recorded start and no valid ticket, so it cannot be timed: permanent
+  | 'too-fast'; // server-measured time under MIN_SOLVE_MS: retrying later gives a longer time
 
 export interface SolveTimeBucket {
   readonly fromMs: number;
@@ -199,8 +240,11 @@ export interface DailyStatsView {
   readonly solvers: number;
   readonly medianMs: number | null;
   readonly buckets: readonly SolveTimeBucket[];
-  /** Present when the request was signed in and that player has solved. */
-  readonly mine: { readonly timeMs: number; readonly fasterThanPct: number } | null;
+  /**
+   * Present when the request was signed in and that player has solved.
+   * `fasterThanPct` is null when nobody else has solved yet (no one to be faster than).
+   */
+  readonly mine: { readonly timeMs: number; readonly fasterThanPct: number | null } | null;
 }
 
 /**
@@ -223,23 +267,36 @@ export function bucketSolveTimes(times: readonly number[], bucketCount = 24): So
   const step = (Math.log(hi) - logLo) / bucketCount;
   const edges = Array.from({ length: bucketCount + 1 }, (_, i) => Math.round(Math.exp(logLo + i * step)));
   const buckets = edges.slice(0, -1).map((from, i) => ({ fromMs: from, toMs: edges[i + 1]!, count: 0 }));
+  // Place each time by the same rounded edges the buckets report: bucket i is
+  // [fromMs, toMs); the last one also takes its upper edge (and anything the
+  // rounding pushed past it), the first anything below it. The unrounded log
+  // index used before could put a time exactly on an edge in the lower bucket.
   for (const t of times) {
-    let i = Math.floor((Math.log(Math.max(t, lo)) - logLo) / step);
-    if (i >= bucketCount) i = bucketCount - 1;
-    if (i < 0) i = 0;
+    let i = 0;
+    let j = bucketCount - 1;
+    while (i < j) {
+      // Largest i with edges[i] <= t.
+      const mid = (i + j + 1) >> 1;
+      if (edges[mid]! <= t) i = mid;
+      else j = mid - 1;
+    }
     buckets[i]!.count += 1;
   }
   return buckets;
 }
 
-/** Share of other solvers you beat: strictly slower solves / all others. */
-export function fasterThanPct(mine: number, times: readonly number[]): number {
+/**
+ * Share of other solvers you beat: strictly slower solves / all others.
+ * `times` must include your own time. Null when there is nobody else to compare with.
+ */
+export function fasterThanPct(mine: number, times: readonly number[]): number | null {
   const others = times.length - 1;
-  if (others <= 0) return 100;
+  if (others <= 0) return null;
   const slower = times.filter((t) => t > mine).length;
   return Math.round((slower / others) * 100);
 }
 
+/** Share line. With no percentage (first solver, or no curve) the comparison is left out. */
 export function puzzleShareText(puzzle: { number: number; target: number }, timeMs: number, pct: number | null): string {
   const s = Math.round(timeMs / 1000);
   const time = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
