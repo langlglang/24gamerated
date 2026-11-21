@@ -1,6 +1,23 @@
 import { useEffect, useState } from 'react';
 import { Auth } from './screens/Auth.js';
 import { Daily } from './screens/Daily.js';
+import { ResetPassword } from './screens/ResetPassword.js';
+
+/** Token from an emailed reset link (?reset=...), read once on load. */
+function readResetToken(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get('reset');
+  } catch {
+    return null;
+  }
+}
+
+/** Drop the token from the address bar so it isn't left in history or shared. */
+function clearResetToken(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('reset');
+  window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+}
 import { Game } from './screens/Game.js';
 import { Home } from './screens/Home.js';
 import { Lobby } from './screens/Lobby.js';
@@ -17,6 +34,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
   /** Where to land after signing in. */
   const [afterAuth, setAfterAuth] = useState<Screen>('ranked');
+  const [resetToken, setResetToken] = useState<string | null>(readResetToken);
 
   // The socket is the authority on the player's record once connected, so a
   // rating change mid-session flows straight back into the auth cache.
@@ -32,6 +50,25 @@ export default function App() {
     if (game.matchFound) setScreen('home');
   }, [game.matchFound]);
 
+  if (resetToken) {
+    return (
+      <ResetPassword
+        auth={auth}
+        token={resetToken}
+        onDone={() => {
+          clearResetToken();
+          setResetToken(null);
+          setScreen('home');
+        }}
+        onRequestNew={() => {
+          clearResetToken();
+          setResetToken(null);
+          setAfterAuth('home');
+          setScreen('auth');
+        }}
+      />
+    );
+  }
   if (screen === 'training') return <Training onExit={() => setScreen('home')} />;
   if (screen === 'daily' && !game.state) {
     return (

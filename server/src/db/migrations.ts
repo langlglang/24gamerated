@@ -98,4 +98,20 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    name: '003_password_resets',
+    sql: `
+      -- Only a SHA-256 of each reset token is stored, so a database leak does
+      -- not hand out working reset links.
+      CREATE TABLE IF NOT EXISTS password_resets (
+        token_hash text PRIMARY KEY,
+        user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at timestamptz NOT NULL,
+        used_at    timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);
+    `,
+  },
 ];
