@@ -6,6 +6,16 @@ import type { GameMode, TeamId } from './types.js';
  */
 export type ScoreKey = string;
 
+/**
+ * An empty score map with no prototype. Score keys are player ids, and an id
+ * such as `__proto__` or `constructor` must be an ordinary key here rather
+ * than reaching Object.prototype (assigning `__proto__` on a plain object
+ * silently changes its prototype and the point is lost).
+ */
+export function emptyScores(): Record<ScoreKey, number> {
+  return Object.create(null) as Record<ScoreKey, number>;
+}
+
 export interface HandScoringContext {
   readonly mode: GameMode;
   readonly playerIds: readonly string[];
@@ -27,8 +37,9 @@ export interface HandResolution {
 }
 
 function teamOf(ctx: HandScoringContext, playerId: string): TeamId {
-  const team = ctx.teamOf?.[playerId];
-  if (!team) throw new Error(`player ${playerId} has no team assignment`);
+  const team =
+    ctx.teamOf && Object.hasOwn(ctx.teamOf, playerId) ? ctx.teamOf[playerId] : undefined;
+  if (team !== 'A' && team !== 'B') throw new Error(`player ${playerId} has no team assignment`);
   return team;
 }
 
@@ -48,7 +59,7 @@ function headToHead(ctx: HandScoringContext): boolean {
 
 /** One point to each listed player. */
 function pointEach(ids: readonly string[]): Record<ScoreKey, number> {
-  const points: Record<ScoreKey, number> = {};
+  const points = emptyScores();
   for (const id of ids) points[id] = 1;
   return points;
 }
@@ -214,9 +225,10 @@ export function applyPoints(
   scores: Readonly<Record<ScoreKey, number>>,
   points: Readonly<Record<ScoreKey, number>>,
 ): Record<ScoreKey, number> {
-  const next: Record<ScoreKey, number> = { ...scores };
+  const next = emptyScores();
+  for (const [key, value] of Object.entries(scores)) next[key] = value;
   for (const [key, value] of Object.entries(points)) {
-    next[key] = (next[key] ?? 0) + value;
+    next[key] = (Object.hasOwn(next, key) ? next[key]! : 0) + value;
   }
   return next;
 }

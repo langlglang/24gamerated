@@ -9,6 +9,7 @@ import type {
   ClientToServerEvents,
   PublicUserView,
   RatedRejection,
+  RatedResultView,
   ServerToClientEvents,
 } from '@24game/shared';
 import { isValidRoomCode, normalizeRoomCode } from '@24game/shared';
@@ -24,9 +25,22 @@ import { pruneExpiredResets } from './db/resets.js';
 import { isDatabaseConfigured, pingDatabase } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import { findById, findByUsername, toPublicUser, touchLastSeen } from './db/users.js';
-import { recordRatedMatch } from './db/matches.js';
-import { createChallenge, expireOlderThan, getChallenge, resolveChallenge } from './db/challenges.js';
+import { MissingPlayerError, recordRatedMatch } from './db/matches.js';
+import {
+  CHALLENGE_EXPIRY_MINUTES,
+  abandonClaim,
+  attachRoom,
+  claimChallenge,
+  createChallenge,
+  expireIfStale,
+  expireOlderThan,
+  getChallenge,
+  isChallengeId,
+  resolveChallenge,
+  type ChallengeView,
+} from './db/challenges.js';
 import { isWellFormed } from './payloads.js';
+import { SlidingWindowLimiter } from './throttle.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(here, CLIENT_DIST_RELATIVE);
@@ -53,11 +67,90 @@ interface SocketSession {
 }
 
 const sessions = new Map<string, SocketSession>();
-/** userId -> socket.id, so challenges reach whoever is currently online. */
-const online = new Map<string, string>();
+/**
+ * userId -> every signed-in socket of that user, oldest first. A player can
+ * have several tabs open; closing one must not make them look offline.
+ */
+const online = new Map<string, string[]>();
 
 function sessionOf(socketId: string): SocketSession {
   return sessions.get(socketId) ?? {};
+}
+
+/**
+ * Handshake sign-ins still being checked, by the user id their token claims.
+ * A user who just connected is not "online" until the check passes, so
+ * anything that needs them online waits for these first.
+ */
+const pendingSignIns = new Map<string, Set<Promise<void>>>();
+
+async function settledOnline(userId: string): Promise<boolean> {
+  if (online.has(userId)) return true;
+  const pending = pendingSignIns.get(userId);
+  if (pending) await Promise.all([...pending]);
+  return online.has(userId);
+}
+
+function addOnline(userId: string, socketId: string): void {
+  const list = (online.get(userId) ?? []).filter((id) => id !== socketId);
+  list.push(socketId);
+  online.set(userId, list);
+}
+
+function removeOnline(userId: string, socketId: string): void {
+  const list = (online.get(userId) ?? []).filter((id) => id !== socketId);
+  if (list.length > 0) online.set(userId, list);
+  else online.delete(userId);
+}
+
+/** The user's most recently signed-in socket, which gets their new games. */
+function latestSocket(userId: string): string | undefined {
+  const list = online.get(userId);
+  return list?.[list.length - 1];
+}
+
+/** Send to every tab a user has open. (Never `io.to([])`: that is everyone.) */
+function emitToUser(
+  userId: string,
+  event: 'challengeIncoming' | 'challengeUpdated',
+  payload: ChallengeView,
+): void {
+  for (const socketId of online.get(userId) ?? []) {
+    if (event === 'challengeIncoming') io.to(socketId).emit('challengeIncoming', payload);
+    else io.to(socketId).emit('challengeUpdated', payload);
+  }
+}
+
+/**
+ * True while the user is seated in anything still being played: a rated room
+ * (seat id = user id) or a guest room any of their signed-in sockets sits in
+ * (guest seats use random ids, so they are found through the sessions).
+ * Finished rated rooms are only a result screen and do not count.
+ */
+function userBusy(userId: string): boolean {
+  if (manager.hasLiveSeat(userId)) return true;
+  for (const session of sessions.values()) {
+    if (session.userId !== userId || !session.roomCode || !session.playerId) continue;
+    const room = manager.get(session.roomCode);
+    if (room && !room.closed && !room.finished && room.hasSeat(session.playerId)) return true;
+  }
+  return false;
+}
+
+/**
+ * Take this socket out of whatever room it is seated in, so one socket never
+ * holds two seats. Mid-match the seat is held for the reconnect grace like any
+ * disconnect; in a lobby or a finished guest match it is freed.
+ */
+function leaveCurrentRoom(socketId: string): void {
+  const session = sessionOf(socketId);
+  if (session.roomCode) {
+    // Leave the broadcast group first: the leaver must not receive the state
+    // update their own departure causes.
+    void io.sockets.sockets.get(socketId)?.leave(session.roomCode);
+    manager.get(session.roomCode)?.disconnect(socketId, { leaving: true });
+  }
+  sessions.set(socketId, { userId: session.userId, username: session.username });
 }
 
 // ------------------------------------------------------------------ room layer
@@ -69,13 +162,20 @@ const manager = new RoomManager({
     if (socketId) io.to(socketId).emit('combineRejected', { error });
   },
   onClosed: (room, reason) => {
+    ratedResults.delete(room.code);
     io.to(room.code).emit('roomClosed', { reason });
     io.socketsLeave(room.code);
   },
   onRatedMatchComplete: (room, outcome) => {
     void persistRatedMatch(room, outcome);
   },
-});
+}, (socketId) => io.sockets.sockets.has(socketId));
+
+/**
+ * roomCode -> userId -> that player's recorded rating change. Kept while the
+ * finished rated room exists, so a refresh on the result screen gets it again.
+ */
+const ratedResults = new Map<string, Map<string, RatedResultView>>();
 
 function broadcast(room: Room): void {
   io.to(room.code).emit('state', room.publicState());
@@ -95,38 +195,41 @@ function socketIdFor(room: Room, playerId: string): string | null {
 async function persistRatedMatch(room: Room, outcome: RatedMatchOutcome): Promise<void> {
   if (!isDatabaseConfigured()) return;
   try {
-    const [rowA, rowB] = await Promise.all([
-      findById(outcome.playerAId),
-      findById(outcome.playerBId),
-    ]);
-    if (!rowA || !rowB) {
-      console.error('[rated] a player vanished before the match could be recorded');
-      return;
-    }
-
+    // Ratings are read, locked and updated inside one transaction there, so
+    // two matches finishing at once for the same player cannot lose an update.
     const recorded = await recordRatedMatch({
       kind: outcome.kind,
-      playerA: rowA,
-      playerB: rowB,
+      playerAId: outcome.playerAId,
+      playerBId: outcome.playerBId,
       scoreA: outcome.scoreA,
       scoreB: outcome.scoreB,
       wentToTiebreak: outcome.wentToTiebreak,
+      forfeitedBy: outcome.forfeitedBy,
     });
+    const rowA = { id: outcome.playerAId, username: recorded.usernameA };
+    const rowB = { id: outcome.playerBId, username: recorded.usernameB };
 
     const send = (
       selfId: string,
       selfChange: { before: number; after: number; delta: number },
       other: { username: string; before: number; after: number; delta: number },
     ) => {
-      const socketId = socketIdFor(room, selfId) ?? online.get(selfId);
-      if (!socketId) return;
-      io.to(socketId).emit('ratedResult', {
+      const view: RatedResultView = {
         matchId: recorded.matchId,
         kind: outcome.kind,
         result: recorded.winnerId === null ? 'draw' : recorded.winnerId === selfId ? 'win' : 'loss',
+        forfeit: outcome.forfeitedBy !== null,
         you: selfChange,
         opponent: other,
-      });
+      };
+      if (!room.closed) {
+        const forRoom = ratedResults.get(room.code) ?? new Map<string, RatedResultView>();
+        forRoom.set(selfId, view);
+        ratedResults.set(room.code, forRoom);
+      }
+      const socketId = socketIdFor(room, selfId) ?? latestSocket(selfId);
+      if (!socketId) return;
+      io.to(socketId).emit('ratedResult', view);
     };
 
     send(rowA.id, recorded.outcome.a, { username: rowB.username, ...recorded.outcome.b });
@@ -134,7 +237,8 @@ async function persistRatedMatch(room: Room, outcome: RatedMatchOutcome): Promis
 
     await Promise.all([pushProfile(rowA.id), pushProfile(rowB.id)]);
   } catch (err) {
-    console.error('[rated] failed to record match:', err);
+    if (err instanceof MissingPlayerError) console.error('[rated]', err.message);
+    else console.error('[rated] failed to record match:', err);
   }
 }
 
@@ -143,11 +247,11 @@ async function persistRatedMatch(room: Room, outcome: RatedMatchOutcome): Promis
  * Callers fire and forget, so a database error is logged here, never thrown.
  */
 async function pushProfile(userId: string): Promise<void> {
-  const socketId = online.get(userId);
-  if (!socketId || !isDatabaseConfigured()) return;
+  if (!online.has(userId) || !isDatabaseConfigured()) return;
   try {
     const row = await findById(userId);
-    io.to(socketId).emit('profile', row ? (toPublicUser(row) as PublicUserView) : null);
+    const profile = row ? (toPublicUser(row) as PublicUserView) : null;
+    for (const socketId of online.get(userId) ?? []) io.to(socketId).emit('profile', profile);
   } catch (err) {
     console.error('[rated] failed to load profile:', err);
   }
@@ -163,7 +267,19 @@ function startRatedMatch(
   const socketB = io.sockets.sockets.get(b.socketId);
   if (!socketA || !socketB) return null;
 
-  const room = manager.createRated(a, b, kind);
+  // Callers have checked neither player is in a live game. Whatever these
+  // sockets still sit in (a finished rated room's result screen) is left
+  // first, so each socket holds exactly one seat.
+  leaveCurrentRoom(socketA.id);
+  leaveCurrentRoom(socketB.id);
+
+  let room: Room;
+  try {
+    room = manager.createRated(a, b, kind);
+  } catch (err) {
+    console.error('[rated] could not create the room:', err);
+    return null;
+  }
 
   for (const [socket, self, other] of [
     [socketA, a, b],
@@ -178,6 +294,7 @@ function startRatedMatch(
     socket.emit('ratedMatchFound', {
       roomCode: room.code,
       playerId: self.userId,
+      reconnectToken: room.reconnectTokenFor(self.userId) ?? '',
       kind,
       opponent: { username: other.username, rating: other.rating },
     });
@@ -194,12 +311,18 @@ function startRatedMatch(
 
 const matchmaker = new Matchmaker(
   (a, b) => {
-    const room = startRatedMatch(a, b, 'ranked');
+    // Someone may have sat down in another game since queueing.
+    const busy = new Set([a, b].filter((e) => userBusy(e.userId)).map((e) => e.userId));
+    const room = busy.size === 0 ? startRatedMatch(a, b, 'ranked') : null;
     if (!room) {
-      // Someone dropped between pairing and seating. Return whoever is still
-      // connected to the queue rather than silently losing their place.
+      // Return whoever is still connected and free to the queue rather than
+      // silently losing their place. A busy player is dropped from it.
       for (const entry of [a, b]) {
-        if (io.sockets.sockets.get(entry.socketId)) matchmaker.join(entry);
+        if (busy.has(entry.userId)) {
+          io.to(entry.socketId).emit('queueStatus', matchmaker.statusFor(entry.userId));
+        } else if (io.sockets.sockets.get(entry.socketId)) {
+          matchmaker.join(entry);
+        }
       }
     }
   },
@@ -221,27 +344,82 @@ function ratedGuard(socketId: string): RatedGuard {
   return { ok: true, userId: session.userId, username: session.username };
 }
 
+// Abuse limits. Failed joins are what room-code guessing looks like; a real
+// player mistypes a code a few times, not dozens.
+const failedJoinsPerSocket = new SlidingWindowLimiter(10, 60_000);
+const failedJoinsPerIp = new SlidingWindowLimiter(60, 60_000);
+const createsPerSocket = new SlidingWindowLimiter(10, 60_000);
+const createsPerIp = new SlidingWindowLimiter(120, 60_000);
+// Challenges push a notification to someone else, so those pushes are capped
+// per sender. Every attempt (typos, offline targets) has a looser cap too.
+const challengeBurst = new SlidingWindowLimiter(5, 30_000);
+const challengeHourly = new SlidingWindowLimiter(20, 10 * 60_000);
+const challengeAttempts = new SlidingWindowLimiter(30, 60_000);
+
+/**
+ * The client address. Behind the one proxy `trust proxy` assumes in
+ * production, that is the last X-Forwarded-For hop; locally, the socket peer.
+ */
+function clientIp(socket: { handshake: { address: string; headers: Record<string, unknown> } }): string {
+  const forwarded = socket.handshake.headers['x-forwarded-for'];
+  if (IS_PRODUCTION && typeof forwarded === 'string' && forwarded.trim()) {
+    const hops = forwarded.split(',').map((h) => h.trim()).filter(Boolean);
+    const last = hops[hops.length - 1];
+    if (last) return last;
+  }
+  return socket.handshake.address;
+}
+
+/** Display names are trimmed and capped; blank becomes Player. */
+function sanitizeName(name: string): string {
+  return name.trim().slice(0, 20) || 'Player';
+}
+
 io.on('connection', (socket) => {
   sessions.set(socket.id, {});
+  const ip = clientIp(socket);
+
+  // A token on the handshake signs the socket in without a round trip, but
+  // only after the same checks `auth:identify` makes: the account must still
+  // exist and the token must not predate a password change. Until that lookup
+  // settles, this socket's events wait (see the middleware below), so nothing
+  // runs against a half-known identity.
+  let identitySettled: Promise<void> = Promise.resolve();
+  const handshakeToken = socket.handshake.auth?.['token'];
+  if (typeof handshakeToken === 'string' && isDatabaseConfigured()) {
+    const claims = verifyToken(handshakeToken);
+    if (claims) {
+      const check = (async () => {
+        try {
+          const row = await findById(claims.userId);
+          if (!socket.connected) return;
+          if (!row || !tokenMatchesPassword(claims, row.password_hash)) return;
+          sessions.set(socket.id, { ...sessionOf(socket.id), userId: row.id, username: row.username });
+          addOnline(row.id, socket.id);
+          void pushProfile(row.id);
+        } catch (err) {
+          console.error('[auth] handshake sign-in failed:', err);
+        }
+      })();
+      const set = pendingSignIns.get(claims.userId) ?? new Set<Promise<void>>();
+      set.add(check);
+      pendingSignIns.set(claims.userId, set);
+      void check.finally(() => {
+        set.delete(check);
+        if (set.size === 0 && pendingSignIns.get(claims.userId) === set) pendingSignIns.delete(claims.userId);
+      });
+      identitySettled = check;
+    }
+  }
 
   // Drop malformed packets before any handler sees them. Not calling next()
   // discards the packet quietly; passing an error would surface as an
-  // unhandled 'error' event on the socket.
+  // unhandled 'error' event on the socket. Well-formed packets wait for the
+  // handshake identity; they all wait on one promise, so order is kept.
   socket.use(([event, ...args], next) => {
-    if (isWellFormed(event, args)) next();
+    if (!isWellFormed(event, args)) return;
+    void identitySettled.then(() => next());
   });
-
-  // A token on the handshake signs the socket in without a round trip.
-  const handshakeToken = socket.handshake.auth?.['token'];
-  if (typeof handshakeToken === 'string') {
-    const claims = verifyToken(handshakeToken);
-    if (claims) {
-      sessions.set(socket.id, { userId: claims.userId, username: claims.username });
-      online.set(claims.userId, socket.id);
-      matchmaker.updateSocket(claims.userId, socket.id);
-      void pushProfile(claims.userId);
-    }
-  }
 
   function context():
     | { ok: true; room: Room; playerId: string }
@@ -268,44 +446,135 @@ io.on('connection', (socket) => {
     }
   }
 
-  // ---- guest rooms: unchanged from the unrated game ----
-
-  socket.on('room:create', ({ name, mode, rules }, ack) => {
-    const trimmed = name.trim().slice(0, 20) || 'Player';
-    const { room, playerId } = manager.create(trimmed, socket.id, mode, rules);
+  /** Bind this socket to a seat it has just been granted. */
+  function seat(room: Room, playerId: string): void {
     sessions.set(socket.id, { ...sessionOf(socket.id), roomCode: room.code, playerId });
     void socket.join(room.code);
-    ack({ ok: true, roomCode: room.code, playerId });
+  }
+
+  // ---- guest rooms ----
+
+  socket.on('room:create', ({ name, mode, rules }, ack) => {
+    // 'wrong-phase' reads "not available right now" on the client; a
+    // dedicated code would need a client release first.
+    if (!createsPerSocket.hit(socket.id) || !createsPerIp.hit(ip)) {
+      ack({ ok: false, error: 'wrong-phase' });
+      return;
+    }
+    leaveCurrentRoom(socket.id);
+    let created: { room: Room; playerId: string };
+    try {
+      created = manager.create(sanitizeName(name), socket.id, mode, rules);
+    } catch (err) {
+      console.error('[rooms] could not create a room:', err);
+      ack({ ok: false, error: 'wrong-phase' });
+      return;
+    }
+    const { room, playerId } = created;
+    seat(room, playerId);
+    ack({
+      ok: true,
+      roomCode: room.code,
+      playerId,
+      reconnectToken: room.reconnectTokenFor(playerId) ?? '',
+    });
     broadcast(room);
   });
 
-  socket.on('room:join', ({ name, roomCode, playerId }, ack) => {
+  socket.on('room:join', ({ name, roomCode, playerId, reconnectToken }, ack) => {
+    if (failedJoinsPerSocket.blocked(socket.id) || failedJoinsPerIp.blocked(ip)) {
+      ack({ ok: false, error: 'wrong-phase' });
+      return;
+    }
+    const refuse = (error: ActionRejection) => {
+      failedJoinsPerSocket.hit(socket.id);
+      failedJoinsPerIp.hit(ip);
+      ack({ ok: false, error });
+    };
+
     const code = normalizeRoomCode(roomCode);
-    if (!isValidRoomCode(code)) {
-      ack({ ok: false, error: 'room-not-found' });
-      return;
-    }
-    const room = manager.get(code);
+    const room = isValidRoomCode(code) ? manager.get(code) : undefined;
     if (!room) {
-      ack({ ok: false, error: 'room-not-found' });
+      refuse('room-not-found');
       return;
     }
-    // Rated seats are keyed by user id, which is public (leaderboards), so
-    // only the signed-in owner of that seat may reclaim it after a refresh.
-    if (room.rated && (!playerId || sessionOf(socket.id).userId !== playerId)) {
-      ack({ ok: false, error: 'not-in-room' });
+    const session = sessionOf(socket.id);
+
+    if (playerId !== undefined && room.hasSeat(playerId)) {
+      // Reclaiming a seat. Player ids are public (every state broadcast
+      // carries them), so the id alone proves nothing: guest seats need the
+      // reconnect token issued with the seat, and rated seats (id = user id)
+      // need a socket signed in as that user.
+      const authorized = room.rated
+        ? session.userId === playerId
+        : room.checkReconnectToken(playerId, reconnectToken);
+      if (!authorized) {
+        refuse('not-in-room');
+        return;
+      }
+      if (session.roomCode !== room.code || session.playerId !== playerId) {
+        leaveCurrentRoom(socket.id);
+      }
+      const result = room.reconnect(playerId, socket.id);
+      if (!result.ok) {
+        refuse(result.error);
+        return;
+      }
+      if (result.replacedSocketId) {
+        // The newest connection holding the seat's credentials wins (the
+        // same player's refresh or new tab). The old socket is detached and
+        // told, so it can never act for the seat again.
+        const old = io.sockets.sockets.get(result.replacedSocketId);
+        const oldSession = sessions.get(result.replacedSocketId);
+        if (oldSession && oldSession.roomCode === room.code) {
+          sessions.set(result.replacedSocketId, {
+            userId: oldSession.userId,
+            username: oldSession.username,
+          });
+        }
+        if (old) {
+          void old.leave(room.code);
+          old.emit('seatReplaced', { roomCode: room.code });
+        }
+      }
+      seat(room, playerId);
+      ack({ ok: true, roomCode: room.code, playerId, reconnectToken: result.reconnectToken });
+      broadcast(room);
+      // A refresh on a finished rated match: the result was already sent to
+      // the old socket, so send it again (once it has been recorded).
+      const recorded = room.finished ? ratedResults.get(room.code)?.get(playerId) : undefined;
+      if (recorded) socket.emit('ratedResult', recorded);
       return;
     }
-    const trimmed = name.trim().slice(0, 20) || 'Player';
-    const id = playerId ?? manager.newPlayerId();
+
+    // A new seat. Rated rooms are never joined this way, and any id the
+    // client suggested is ignored: the server picks seat ids.
+    if (room.rated) {
+      refuse('not-in-room');
+      return;
+    }
+    const trimmed = sanitizeName(name);
+    if (session.roomCode !== room.code) {
+      // Check before leaving, so a refused join does not cost the old seat.
+      const blocked = room.canJoin(trimmed);
+      if (blocked) {
+        refuse(blocked);
+        return;
+      }
+    }
+    leaveCurrentRoom(socket.id);
+    if (room.closed) {
+      refuse('room-not-found');
+      return;
+    }
+    const id = manager.newPlayerId();
     const result = room.join({ id, name: trimmed, socketId: socket.id });
     if (!result.ok) {
-      ack({ ok: false, error: result.error });
+      refuse(result.error);
       return;
     }
-    sessions.set(socket.id, { ...sessionOf(socket.id), roomCode: room.code, playerId: id });
-    void socket.join(room.code);
-    ack({ ok: true, roomCode: room.code, playerId: id });
+    seat(room, id);
+    ack({ ok: true, roomCode: room.code, playerId: id, reconnectToken: result.reconnectToken });
     broadcast(room);
   });
 
@@ -332,14 +601,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('room:leave', () => {
-    const ctx = context();
-    if (ctx.ok) {
-      ctx.room.disconnect(socket.id);
-      void socket.leave(ctx.room.code);
-    }
     // Leaving a room must not sign the player out.
-    const { userId, username } = sessionOf(socket.id);
-    sessions.set(socket.id, { userId, username });
+    leaveCurrentRoom(socket.id);
   });
 
   // ---- accounts ----
@@ -361,9 +624,13 @@ io.on('connection', (socket) => {
           ack({ ok: false, error: 'not-signed-in' });
           return;
         }
+        const previous = sessionOf(socket.id).userId;
+        if (previous && previous !== row.id) {
+          matchmaker.leaveIfOwner(previous, socket.id);
+          removeOnline(previous, socket.id);
+        }
         sessions.set(socket.id, { ...sessionOf(socket.id), userId: row.id, username: row.username });
-        online.set(row.id, socket.id);
-        matchmaker.updateSocket(row.id, socket.id);
+        addOnline(row.id, socket.id);
         await touchLastSeen(row.id);
         ack({ ok: true, user: toPublicUser(row) as PublicUserView });
       } catch (err) {
@@ -374,10 +641,18 @@ io.on('connection', (socket) => {
   });
 
   socket.on('auth:signOut', () => {
+    // Signing out mid rated match leaves it (a forfeit loss): the seat is
+    // the account's, and this socket no longer speaks for that account.
+    {
+      const current = sessionOf(socket.id);
+      const room = current.roomCode ? manager.get(current.roomCode) : undefined;
+      if (room?.rated && !room.finished) leaveCurrentRoom(socket.id);
+    }
     const { userId, roomCode, playerId } = sessionOf(socket.id);
     if (userId) {
-      matchmaker.leave(userId);
-      if (online.get(userId) === socket.id) online.delete(userId);
+      // Only this tab's search ends; another tab's stays queued.
+      matchmaker.leaveIfOwner(userId, socket.id);
+      removeOnline(userId, socket.id);
     }
     sessions.set(socket.id, { roomCode, playerId });
   });
@@ -394,8 +669,8 @@ io.on('connection', (socket) => {
       ack({ ok: false, error: 'already-queued' });
       return;
     }
-    const existing = manager.findByPlayer(guard.userId);
-    if (existing && existing.phase !== 'match-result' && existing.phase !== 'lobby') {
+    // Any game still being played counts, guest rooms included, in any tab.
+    if (userBusy(guard.userId)) {
       ack({ ok: false, error: 'already-in-room' });
       return;
     }
@@ -404,6 +679,15 @@ io.on('connection', (socket) => {
         const row = await findById(guard.userId);
         if (!row) {
           ack({ ok: false, error: 'not-signed-in' });
+          return;
+        }
+        if (!socket.connected) return;
+        if (userBusy(guard.userId)) {
+          ack({ ok: false, error: 'already-in-room' });
+          return;
+        }
+        if (matchmaker.has(guard.userId)) {
+          ack({ ok: false, error: 'already-queued' });
           return;
         }
         matchmaker.join({
@@ -424,6 +708,7 @@ io.on('connection', (socket) => {
   socket.on('queue:leave', () => {
     const { userId } = sessionOf(socket.id);
     if (!userId) return;
+    // An explicit "stop searching" from any of the user's tabs.
     matchmaker.leave(userId);
     socket.emit('queueStatus', matchmaker.statusFor(userId));
   });
@@ -434,6 +719,14 @@ io.on('connection', (socket) => {
     const guard = ratedGuard(socket.id);
     if (!guard.ok) {
       ack({ ok: false, error: guard.error });
+      return;
+    }
+    if (!challengeAttempts.hit(guard.userId)) {
+      ack({ ok: false, error: 'rate-limited' });
+      return;
+    }
+    if (userBusy(guard.userId)) {
+      ack({ ok: false, error: 'already-in-room' });
       return;
     }
     void (async () => {
@@ -447,13 +740,26 @@ io.on('connection', (socket) => {
           ack({ ok: false, error: 'cannot-challenge-self' });
           return;
         }
-        const targetSocket = online.get(target.id);
-        if (!targetSocket) {
+        if (!(await settledOnline(target.id))) {
           ack({ ok: false, error: 'opponent-offline' });
           return;
         }
-        const challenge = await createChallenge(guard.userId, target.id);
-        io.to(targetSocket).emit('challengeIncoming', challenge);
+        if (userBusy(target.id)) {
+          ack({ ok: false, error: 'opponent-busy' });
+          return;
+        }
+        // New challenges are capped; re-sending one that is still pending
+        // just re-notifies (and only counts as an attempt).
+        if (challengeBurst.blocked(guard.userId) || challengeHourly.blocked(guard.userId)) {
+          ack({ ok: false, error: 'rate-limited' });
+          return;
+        }
+        const { challenge, created } = await createChallenge(guard.userId, target.id);
+        if (created) {
+          challengeBurst.hit(guard.userId);
+          challengeHourly.hit(guard.userId);
+        }
+        emitToUser(target.id, 'challengeIncoming', challenge);
         ack({ ok: true, challenge });
       } catch (err) {
         console.error('[challenge] send failed:', err);
@@ -468,8 +774,19 @@ io.on('connection', (socket) => {
       ack({ ok: false, error: guard.error });
       return;
     }
+    if (!isChallengeId(id)) {
+      ack({ ok: false, error: 'challenge-not-found' });
+      return;
+    }
     void (async () => {
       try {
+        // The sweeper only runs every few minutes; expiry is enforced here too.
+        const stale = await expireIfStale(id);
+        if (stale) {
+          emitToUser(stale.fromUserId, 'challengeUpdated', stale);
+          ack({ ok: false, error: 'challenge-not-found' });
+          return;
+        }
         const challenge = await getChallenge(id);
         if (!challenge || challenge.status !== 'pending' || challenge.toUserId !== guard.userId) {
           ack({ ok: false, error: 'challenge-not-found' });
@@ -478,15 +795,28 @@ io.on('connection', (socket) => {
 
         if (!accept) {
           const declined = await resolveChallenge(id, 'declined');
-          const fromSocket = online.get(challenge.fromUserId);
-          if (fromSocket && declined) io.to(fromSocket).emit('challengeUpdated', declined);
+          if (!declined) {
+            ack({ ok: false, error: 'challenge-not-found' });
+            return;
+          }
+          emitToUser(challenge.fromUserId, 'challengeUpdated', declined);
           ack({ ok: true });
           return;
         }
 
-        const challengerSocket = online.get(challenge.fromUserId);
-        if (!challengerSocket) {
-          await resolveChallenge(id, 'expired');
+        // Busy players leave the challenge pending: it can still be taken up
+        // once their current game is over.
+        if (userBusy(guard.userId)) {
+          ack({ ok: false, error: 'already-in-room' });
+          return;
+        }
+        if (userBusy(challenge.fromUserId)) {
+          ack({ ok: false, error: 'opponent-busy' });
+          return;
+        }
+        if (!(await settledOnline(challenge.fromUserId))) {
+          const expired = await resolveChallenge(id, 'expired');
+          if (expired) emitToUser(challenge.fromUserId, 'challengeUpdated', expired);
           ack({ ok: false, error: 'opponent-offline' });
           return;
         }
@@ -500,28 +830,50 @@ io.on('connection', (socket) => {
           return;
         }
 
-        const room = startRatedMatch(
-          {
-            userId: challenger.id,
-            username: challenger.username,
-            rating: challenger.rating,
-            socketId: challengerSocket,
-          },
-          { userId: target.id, username: target.username, rating: target.rating, socketId: socket.id },
-          'challenge',
-        );
+        // Claim first, start second. Only one of several racing accepts (a
+        // double tap, two tabs) gets the row, so at most one match starts.
+        const claimed = await claimChallenge(id, guard.userId);
+        if (!claimed) {
+          ack({ ok: false, error: 'challenge-not-found' });
+          return;
+        }
+
+        // Things may have moved during the awaits above. From here to the
+        // room existing there is no await, so these checks hold for the start.
+        const challengerSocket = latestSocket(challenger.id);
+        let problem: RatedRejection | null = null;
+        if (!socket.connected) problem = 'opponent-offline';
+        else if (userBusy(target.id)) problem = 'already-in-room';
+        else if (userBusy(challenger.id)) problem = 'opponent-busy';
+        else if (!challengerSocket) problem = 'opponent-offline';
+
+        const room =
+          problem === null && challengerSocket
+            ? startRatedMatch(
+                {
+                  userId: challenger.id,
+                  username: challenger.username,
+                  rating: challenger.rating,
+                  socketId: challengerSocket,
+                },
+                { userId: target.id, username: target.username, rating: target.rating, socketId: socket.id },
+                'challenge',
+              )
+            : null;
         if (!room) {
-          ack({ ok: false, error: 'opponent-offline' });
+          const closed = await abandonClaim(id, problem === 'opponent-offline' || !problem ? 'expired' : 'cancelled');
+          if (closed) emitToUser(challenger.id, 'challengeUpdated', closed);
+          ack({ ok: false, error: problem ?? 'opponent-offline' });
           return;
         }
 
         // Neither player should still be hunting for a different game.
         matchmaker.leave(challenger.id);
         matchmaker.leave(target.id);
-
-        const accepted = await resolveChallenge(id, 'accepted', room.code);
-        if (accepted) io.to(challengerSocket).emit('challengeUpdated', accepted);
         ack({ ok: true });
+
+        const accepted = await attachRoom(id, room.code);
+        if (accepted) emitToUser(challenger.id, 'challengeUpdated', accepted);
       } catch (err) {
         console.error('[challenge] respond failed:', err);
         ack({ ok: false, error: 'accounts-unavailable' });
@@ -531,14 +883,13 @@ io.on('connection', (socket) => {
 
   socket.on('challenge:cancel', ({ id }) => {
     const guard = ratedGuard(socket.id);
-    if (!guard.ok) return;
+    if (!guard.ok || !isChallengeId(id)) return;
     void (async () => {
       try {
         const challenge = await getChallenge(id);
         if (!challenge || challenge.fromUserId !== guard.userId) return;
         const cancelled = await resolveChallenge(id, 'cancelled');
-        const toSocket = online.get(challenge.toUserId);
-        if (toSocket && cancelled) io.to(toSocket).emit('challengeUpdated', cancelled);
+        if (cancelled) emitToUser(challenge.toUserId, 'challengeUpdated', cancelled);
       } catch (err) {
         console.error('[challenge] cancel failed:', err);
       }
@@ -548,8 +899,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const { userId } = sessionOf(socket.id);
     if (userId) {
-      matchmaker.leave(userId);
-      if (online.get(userId) === socket.id) online.delete(userId);
+      // Closing one tab must not end a search another tab started.
+      matchmaker.leaveIfOwner(userId, socket.id);
+      removeOnline(userId, socket.id);
     }
     const ctx = context();
     if (ctx.ok) ctx.room.disconnect(socket.id);
@@ -559,8 +911,27 @@ io.on('connection', (socket) => {
 
 // ----------------------------------------------------------------- http layer
 
+app.disable('x-powered-by');
+
+// Basic hardening on every response. No Content-Security-Policy yet: the
+// client loads Google Fonts and a Vite build, and a wrong policy would blank
+// the page; frame-ancestors is covered by X-Frame-Options instead.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  if (IS_PRODUCTION) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
+
 app.use('/api', createAuthRouter());
 app.use('/api', createDailyRouter());
+// Unknown API routes and wrong methods answer in JSON like the rest of the API.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 app.get('/healthz', (_req, res) => {
   void (async () => {
@@ -574,18 +945,61 @@ app.get('/healthz', (_req, res) => {
   })();
 });
 
-app.use(express.static(clientDist));
-app.get(/^(?!\/(api|healthz|socket\.io)).*/, (_req, res) => {
+// Vite fingerprints everything under /assets, so those files never change and
+// can be cached for good. A missing asset is a 404, never index.html (which
+// would be served as JavaScript and fail confusingly).
+app.use(
+  '/assets',
+  express.static(path.join(clientDist, 'assets'), { immutable: true, maxAge: '1y', index: false }),
+  (_req, res) => {
+    res.status(404).type('text/plain').send('Not found');
+  },
+);
+app.use(express.static(clientDist, { index: false }));
+
+function sendIndex(res: express.Response): void {
+  // Always revalidate the page itself, so a deploy is picked up at once.
+  res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(clientDist, 'index.html'), (err) => {
-    if (err) res.status(404).send('Client build not found. Run `npm run build` first.');
+    if (err && !res.headersSent) {
+      res.status(404).type('text/plain').send('Client build not found. Run `npm run build` first.');
+    }
   });
+}
+
+// Client-side routes. Anchored so /apiary or /healthzz are pages, not API paths.
+app.get(/^(?!\/(api|healthz|socket\.io)(\/|$)).*/, (_req, res) => sendIndex(res));
+
+app.use((_req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
+// Body-parser failures (malformed JSON, oversized body, bad charset) and
+// anything a route passes to next(err): a JSON error with the right status,
+// never Express's HTML page or a stack trace.
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  const e = (err ?? {}) as { status?: unknown; statusCode?: unknown; type?: unknown };
+  const raw = typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : 500;
+  const status = raw >= 400 && raw < 600 ? raw : 500;
+  let error: string;
+  if (e.type === 'entity.parse.failed') error = 'Malformed JSON';
+  else if (status === 413) error = 'Request body too large';
+  else if (status === 415) error = 'Unsupported content encoding';
+  else if (status < 500) error = 'Bad request';
+  else error = 'Server error';
+  if (status >= 500) console.error('[http] request failed:', err);
+  res.status(status).json({ error });
 });
 
 // Challenges nobody answered should not pile up in an inbox forever.
 if (isDatabaseConfigured()) {
   const sweeper = setInterval(
     () => {
-      void expireOlderThan(10).catch((err) => console.error('[challenges] sweep failed:', err));
+      void expireOlderThan(CHALLENGE_EXPIRY_MINUTES).catch((err) => console.error('[challenges] sweep failed:', err));
       void pruneExpiredResets().catch((err) => console.error('[auth] reset sweep failed:', err));
     },
     5 * 60_000,

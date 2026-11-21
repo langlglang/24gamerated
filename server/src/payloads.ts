@@ -43,7 +43,9 @@ const anything: Check = () => true;
 const CHECKS: Readonly<Record<string, Check>> = {
   'room:create': payloadWithAck((p) => isString(p['name']) && isGameMode(p['mode']) && isRuleSet(p['rules'])),
   'room:join': payloadWithAck(
-    (p) => isString(p['name']) && isString(p['roomCode']) && isOptionalString(p['playerId']),
+    (p) => isString(p['name']) && isString(p['roomCode']) &&
+      isOptionalString(p['playerId']) &&
+      isOptionalString(p['reconnectToken']),
   ),
   'room:configure': payload(
     (p) => (p['mode'] === undefined || isGameMode(p['mode'])) && (p['rules'] === undefined || isRuleSet(p['rules'])),

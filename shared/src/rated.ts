@@ -60,6 +60,11 @@ export interface RatedResultView {
   readonly matchId: string;
   readonly kind: RatedKind;
   readonly result: 'win' | 'loss' | 'draw';
+  /**
+   * The match ended because a player left it. With `result` 'win' the
+   * opponent left; with 'loss' you did.
+   */
+  readonly forfeit: boolean;
   readonly you: RatingChangeView;
   readonly opponent: RatingChangeView & { readonly username: string };
 }
@@ -75,6 +80,8 @@ export interface MatchHistoryEntryView {
   readonly ratingAfter: number;
   readonly delta: number;
   readonly result: 'win' | 'loss' | 'draw';
+  /** Ended because a player left (see RatedResultView.forfeit). */
+  readonly forfeit: boolean;
 }
 
 export type RatedRejection =
@@ -86,7 +93,8 @@ export type RatedRejection =
   | 'cannot-challenge-self'
   | 'challenge-not-found'
   | 'opponent-offline'
-  | 'opponent-busy';
+  | 'opponent-busy'
+  | 'rate-limited';
 
 export const RATED_REJECTION_TEXT: Readonly<Record<RatedRejection, string>> = {
   'not-signed-in': 'Sign in to play rated games.',
@@ -98,4 +106,5 @@ export const RATED_REJECTION_TEXT: Readonly<Record<RatedRejection, string>> = {
   'challenge-not-found': 'That challenge is no longer available.',
   'opponent-offline': 'That player is not online right now.',
   'opponent-busy': 'That player is already in a game.',
+  'rate-limited': 'Too many challenges. Wait a minute and try again.',
 };
