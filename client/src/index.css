@@ -16,6 +16,22 @@
     user-select: none;
   }
 
+  /*
+    Pinch-zoom stays available (WCAG 1.4.4), but double-tap-to-zoom is off on
+    anything tappable, so hammering Buzz in never zooms the page. This also
+    drops the 300ms tap delay on older mobile browsers.
+  */
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  label,
+  summary,
+  [role='button'] {
+    touch-action: manipulation;
+  }
+
   :focus-visible {
     @apply outline outline-2 outline-offset-2 outline-ink;
   }
