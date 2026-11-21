@@ -29,8 +29,14 @@ export function previousDailyKey(key: string): string {
   return dailyKey(new Date(Date.parse(`${key}T00:00:00Z`) - DAY_MS));
 }
 
-/** 1-based puzzle number shown to players ("Daily #12"). */
+/** Throws on anything that is not a real "YYYY-MM-DD" day, instead of quietly producing NaN. */
+export function assertDailyKey(key: unknown): asserts key is string {
+  if (!isDailyKey(key)) throw new RangeError(`not a daily key: ${JSON.stringify(key)}`);
+}
+
+/** 1-based puzzle number shown to players ("Daily #12"). Throws on an invalid key. */
 export function dailyNumber(key: string): number {
+  assertDailyKey(key);
   return Math.floor((Date.parse(`${key}T00:00:00Z`) - DAILY_EPOCH_UTC) / DAY_MS) + 1;
 }
 

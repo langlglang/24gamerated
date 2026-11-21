@@ -77,7 +77,11 @@ time. A quiet queue still matches eventually.
 
 **Friend challenges.** Type a username, they get an invite. Accepting starts a rated match
 immediately. Challenges are rated exactly like ranked games; they just skip the queue. The target
-has to be online, and unanswered invites expire after 10 minutes.
+has to be online and not already in a game, and unanswered invites expire after 10 minutes (checked
+when someone answers, not just by the periodic sweep). New challenges are limited to 5 per 30 s and
+20 per 10 minutes per sender (refused with `rate-limited` while the cap is reached), and attempts of
+any kind to 30 a minute, and there is at most one pending challenge per pair of players.
+Accepting claims the challenge in the database first, so a double tap or two tabs start one match.
 
 **Ratings.** Standard Elo, starting at **1200**:
 
@@ -88,9 +92,12 @@ has to be online, and unanswered invites expire after 10 minutes.
 | Rating ≥ 2400 | K=16 — slower churn at the top |
 | Floor | 100 — a losing streak cannot spiral forever |
 
-A decided game always moves the rating by at least 1 point (rounding is away from zero), and the
-exchange is zero-sum: what the winner gains, the loser loses. Both sides are computed from the
-ratings held *before* the match, so order of processing cannot change the outcome.
+A decided game always moves the rating by at least 1 point (rounding is away from zero). Each side's
+change is computed with **its own** K-factor from the ratings both players held *before* the match,
+so order of processing cannot change the outcome. The exchange is zero-sum only when both players
+have the same K-factor and neither is held up by the floor: a provisional player (K=40) beating an
+established one (K=24) gains more than the other loses, and a player at 100 loses nothing more.
+Rounding away from zero on both sides can also add a point.
 
 ### Rated matches use one fixed ruleset
 
@@ -104,6 +111,18 @@ always plays with both ON.
 No rematch button. Another rated game means requeuing or a fresh challenge — so both players
 consent to putting their rating up again. The series tally is a guest-room feature.
 
+### Leaving a rated match is a loss
+
+Leaving mid-match — *Leave*, signing out, or creating/joining another room — loses the match by
+forfeit straight away. A dropped connection gets the usual 60 s to come back (the match resumes as
+if nothing happened); if it does not, that is a forfeit too. The player who stayed wins and gets
+the result screen and rating change at once. Ratings move exactly as for a normal result: the
+current scores are recorded, but the winner is whoever stayed, even if the leaver was ahead. The
+match row is marked `forfeit`, and the result carries it (`matchResult.forfeitedBy`,
+`ratedResult.forfeit`, `forfeit` in match history) so the client can say "… left — you win by
+forfeit". If both players are gone when the grace runs out, nothing is recorded: no contest, and
+nobody is penalised.
+
 ---
 
 ## Daily puzzle
@@ -116,20 +135,38 @@ One puzzle a day, the same for everyone. Solve time is the only measure.
   always reachable but has only a few solutions. A new puzzle arrives at midnight UTC.
 - **Unlimited retries.** Wrong answers cost nothing but time. There is no score beyond the time.
 - **The curve.** After solving you see a distribution curve of everyone's solve times for the day
-  (log-scale buckets), the median, and the share of other solvers you were faster than.
-- **Server-measured time.** When a signed-in player fetches the puzzle, the server records when
-  they first opened it (`daily_starts`). On solve, if that start exists, the stored time is the
-  server's elapsed time since then — the client's claimed time is ignored. Only when there is no
-  start (solved as a guest, then signed in) is the claimed time used. Under 3 s is rejected.
-  The first correct solve stands.
-- **Test accounts** (`@example.test`) are left out of the curve and solver count; they still see
-  where their own time would place.
+  (log-scale buckets; a time on a bucket edge belongs to the bucket that starts there), the median,
+  and the share of other solvers you were faster than. With nobody else in the pool there is no
+  percentage: the screen says you're the first to solve and the share text leaves it out.
+- **Server-measured time, always.** Every `GET /api/daily/puzzle`, guest or signed in, returns a
+  `startTicket`: an HMAC (key derived from `JWT_SECRET`) over the day and the issue time
+  (`server/src/daily/ticket.ts`). The client keeps the first ticket of the day with its local run
+  and sends it with the solve. A signed-in fetch also records when the account first opened the
+  puzzle (`daily_starts`). On solve, the stored time is now minus the earliest trustworthy start:
+  the earlier of the account's recorded start and a valid ticket's issue time for that day. The
+  client's claimed `timeMs` is ignored. Because the ticket travels with the run, a guest who signs in
+  halfway through is timed from when they really began. A guest who finishes posts the solve to
+  `POST /api/daily/guest-solve`, which checks it and returns a signed receipt (start and finish);
+  after signing in the client posts that receipt (before its signed-in fetch), and the stored time
+  ends at the receipt's finish, so time spent on the sign-in form doesn't count.
+- **No start, no count.** With neither a recorded start nor a valid ticket for that day, the solve is
+  refused (400, `code: 'no-start'`) and not stored, so it never reaches the curve. Under 3 s of
+  server-measured time is refused (`code: 'too-fast'`; the client may retry, which only measures
+  longer); over 24 h (only possible on yesterday's puzzle) is recorded as 24 h. The first correct
+  solve stands.
+- **Never cached.** Puzzle responses are `Cache-Control: private, no-store` (each carries its own
+  ticket, and a cached copy could outlive midnight UTC); the client fetches with `cache: 'no-store'`.
+- **Test accounts** (`@example.test`, any subdomain, trailing dot allowed) are left out of the curve
+  and solver count; they still see where their own time would place.
 
-API: `GET /api/daily/puzzle` (no account needed; with a bearer token it also starts your clock),
-`POST /api/daily/solve` (account; today's or yesterday's puzzle; body `{ day, steps, timeMs }`),
-`GET /api/daily/stats?day=` (public; includes your own time and faster-than % when signed in).
-Tables: `daily_solves` (migration `004`) and `daily_starts` (migration `005`). The old 13-hand
-daily's `daily_results` and `follows` tables are left in place, unused.
+API: `GET /api/daily/puzzle` (no account needed; returns `{ day, number, cards, target, startTicket }`;
+with a bearer token it also starts your account's clock), `POST /api/daily/solve` (account; today's
+or yesterday's puzzle; body `{ day, steps, startTicket, solveReceipt? }`; refusals carry `code`: `closed`,
+`bad-steps`, `not-target`, `no-start` are final, `too-fast` is not), `GET /api/daily/stats?day=`
+(public; includes your own time and faster-than % when signed in, `fasterThanPct: null` when nobody
+else has solved), `POST /api/daily/guest-solve` (no account; body `{ day, steps, startTicket }`;
+returns `{ timeMs, solveReceipt }`; stores nothing). Tables: `daily_solves` (migration `004`) and `daily_starts` (migration `005`).
+The old 13-hand daily's `daily_results` and `follows` tables are left in place, unused.
 
 ## Layout
 
@@ -250,10 +287,31 @@ replays cleanly through the validator.
 **Timers** are enforced by the server. Clients interpolate between broadcasts for a smooth
 countdown but never decide that time is up.
 
-**Disconnects** pause the room with a `waiting for player` state; the seat is held for 60 s and
-reclaimed via the same room code (the client stores its player id in `localStorage`, so a refresh
-also gets the seat back). After the grace period the room closes. Dropping mid-answer is resolved as
-a failed attempt *before* pausing, so disconnecting is never a way to escape a bad buzz.
+**Disconnects** pause the room with a `waiting for player` state; the seat is held for 60 s. After
+the grace period the room closes. Dropping mid-answer is resolved as a failed attempt *before*
+pausing, so disconnecting is never a way to escape a bad buzz. Someone *else* dropping does not
+cancel a buzz either: the answer in progress is frozen and resumes (with a fresh answer window) when
+everyone is back. Open play resumes on the hand clock that was left, with a 15 s floor.
+
+**Seats are claimed with a secret.** Player ids are public (they are in every state broadcast), so
+creating or joining a room also returns a per-seat `reconnectToken` that only that player gets. The
+client keeps both in `localStorage`; `room:join` with `playerId` + `reconnectToken` reclaims the
+seat after a refresh. Without the right token the request is refused. If the seat is still held by
+another live socket, the newest connection wins and the old one gets `seatReplaced` (that is the
+same player's new tab or refresh; refusing would lock them out of their own seat until the old
+socket times out). New seats always get a server-chosen id. A socket holds at most one seat:
+creating or joining another room leaves the current one first.
+
+**Host.** The host role moves to a connected player whenever the host leaves a lobby or a finished
+match. During a paused match the host keeps the role, since the game cannot continue (or reach a
+host-only screen) until every seat is back. When a player leaves a finished guest match their seat
+is freed (at once for *Leave*, after the 60 s grace for a dropped connection); if too few players are
+left for another match, the room returns to the lobby so others can join with the same code.
+
+**Abuse limits.** Failed joins are limited per socket (10 a minute) and per IP (60 a minute), which
+stops room-code guessing; room creation is limited too. Rooms whose players have all gone stop being
+"active" (only player actions count, not timers), and seats whose socket is gone are dropped by the
+minute sweep, so abandoned rooms close instead of dealing sudden death forever.
 
 **Matches are a series.** Finishing a match leaves the room in `match-result` with per-match scores
 reset but a `series.wins` tally that persists. The host's *Play again* reshuffles a fresh deck and
@@ -264,30 +322,51 @@ Rooms are in-memory and ephemeral; idle ones are swept after 10 minutes.
 
 ### Rated internals
 
-**Ratings are computed from pre-match values.** `recordRatedMatch` takes both players' rows as read
-at the end of the match and writes the match row plus both rating updates in **one transaction**, so
-a crash cannot record a game without moving the ratings, or vice versa.
+**Ratings are read under a row lock.** `recordRatedMatch` locks both players' rows
+(`SELECT … FOR UPDATE`, in id order) inside **one transaction**, computes the Elo change from the
+ratings read there, and writes the match row plus both rating updates in that same transaction. Two
+matches finishing at once for the same player are applied one after the other, never over each
+other, and a crash cannot record a game without moving the ratings, or vice versa.
+
+**One live game per player.** Queueing, sending and accepting challenges are refused while the player
+(or, for challenges, the opponent) is seated in any game still being played, guest rooms included and
+in any tab. A finished rated room only shows the result; it does not count, and its sockets leave it
+when the next match starts. The queue entry belongs to the tab that queued: closing or signing out in
+another tab does not drop it.
+
+**Socket sign-in is checked like REST.** A token on the socket handshake is only trusted after the
+account lookup and password-version check `auth:identify` does; the socket's events wait until that
+has settled.
 
 **Recording a rated match never affects the game.** The match has already finished correctly by the
 time the rating layer runs, so persistence failures are logged and swallowed rather than thrown.
 Players see "Recording your rating…" instead of a broken result screen.
 
-**In rated rooms, seat id = user id.** No extra mapping, and a reconnect lands the right account
-back in the right seat.
+**In rated rooms, seat id = user id.** No extra mapping. Only a socket signed in as that user can
+reclaim the seat, and rejoining a finished rated room re-sends that player's `ratedResult`.
 
 **Sessions are stateless JWTs**, presented on REST calls via `Authorization` and on the socket
 handshake via `auth.token`, so both transports agree on who you are. The tradeoff: a token cannot be
 revoked before it expires. Fine for a game leaderboard; anything touching payments would want
 server-side sessions.
 
-**Passwords** are bcrypt at cost 10. Login failures return one message whether the account exists or
-not, so the endpoint cannot be used to enumerate accounts, and repeated failures are throttled per
-IP + identifier.
+**Passwords** are bcrypt at cost 10, from 8 characters up to 72 **bytes** of UTF-8. bcrypt ignores
+everything past byte 72, so a longer new password is refused rather than silently cut short (72
+plain characters, fewer with accents or emoji). Accounts created before the limit still sign in with
+their full password. Login failures return one message whether the account exists or not, and an
+unknown account is still checked against a dummy bcrypt hash of the same cost, so neither the reply
+nor its timing can be used to enumerate accounts. Repeated failures are throttled per IP +
+identifier. The auth endpoints accept only JSON strings in their fields (an array or object gets a
+400 instead of being coerced), and an email or login name containing control characters is
+rejected before it reaches the database.
 
 **Password resets** follow the same rule: `POST /api/auth/forgot` answers identically whether or not
 the email has an account, and replies *before* the lookup and the email send, so response time
-cannot give it away either. It is throttled per IP (10 an hour) and per address (3 an hour); the
-server sets `trust proxy` so the IP is the player's, not Render's proxy. Requesting a new link
+cannot give it away either. It is throttled per IP (10 an hour), then per address (5 an hour).
+A request already blocked per IP does not count against the address, so a blocked sender cannot use
+up someone else's quota. A sender with many IPs can still exhaust one address's hourly quota, but
+each of its requests mails the real owner a working link (the newest stays valid for 30 minutes), so
+that is a nuisance, not a takeover. The server sets `trust proxy` so the IP is the player's, not Render's proxy. Requesting a new link
 cancels earlier ones. Tokens are 32 random bytes; only their
 SHA-256 is stored (`password_resets`, migration `003_password_resets`, applied on boot), so a
 database leak yields no working links. A token expires after 30 minutes, is spent by
@@ -350,9 +429,10 @@ the gap is invisible to players — check the logs after setting it up.
 ## Testing
 
 ```bash
-npm test                        # 72 unit tests
+npm test                        # unit tests (shared + server)
 npm run build && npm start      # terminal 1
 npm run smoke                   # terminal 2 — guest play
+node scripts/smoke-seats.mjs    # terminal 2 — seat tokens, one seat per socket, pauses
 node scripts/smoke-rated.mjs    # terminal 2 — rated play (needs DATABASE_URL)
 ```
 
@@ -365,19 +445,32 @@ node scripts/smoke-rated.mjs    # terminal 2 — rated play (needs DATABASE_URL)
 Unit tests cover exact rational arithmetic, the solver under **all four rule combinations**, the
 validator's rejection paths (division by zero, non-integer with fractions OFF, negative with
 negatives OFF, reused card, unknown card, wrong step count, complete-but-not-24), every 3-player
-scoring edge case including the 0.5/0.5 split, and Elo — symmetry, zero-sum exchange, K-factor
-tiers, the rating floor, order independence, and that a long series stays bounded.
+scoring edge case including the 0.5/0.5 split, score maps that stay correct for any player id
+(even `__proto__`), and Elo — symmetry, zero-sum exchange between equal K-factors, K-factor tiers,
+the rating floor, order independence, and that a long series stays bounded. Server tests
+(`server/src/*.test.ts`, fake timers) cover seat tokens, pause/resume of an answer in progress, the
+resumed hand clock, host handoff, sudden-death numbering, idle/ghost-room handling, queue ownership
+and the rate limiter.
 
 **`npm run smoke`** drives two socket clients through create → join → start → buzz → solve, and
 asserts the round locks to the buzzer, a second buzz is refused, the score moves, and the solver
 verdict is not leaked in the state payload. It passes with `DATABASE_URL` unset, which is how
 guest-only mode stays honest.
 
+**`scripts/smoke-seats.mjs`** checks guest seats over real sockets: a public player id alone cannot
+take a seat, the reconnect token reclaims it (and the old socket gets `seatReplaced`), client-chosen
+ids are ignored, one socket holds one seat, someone else dropping does not cancel a buzz, and failed
+joins are throttled. Run it last against a server you are also testing by hand: it trips the
+failed-join limit for its own socket.
+
 **`scripts/smoke-rated.mjs`** registers throwaway accounts and checks the rated path end to end:
 duplicate usernames rejected, wrong passwords rejected, match history requires a token, a friend
 challenge reaches the target and starts a match, the matchmaker pairs two queued players, a full
 13-hand ranked match runs, and the resulting Elo change is non-zero, zero-sum, correctly signed, and
-written through to `/api/auth/me`, match history, and the leaderboard. It leaves its test accounts
+written through to `/api/auth/me`, match history, and the leaderboard. It then checks the multi-tab and
+one-live-game rules: a refresh on the result screen gets the rating result again, a finished rated
+room does not block the queue but a guest seat does, closing another tab keeps the queue entry, a
+double-tapped accept starts one match, and a player in a live match cannot be challenged or queue. It leaves its test accounts
 behind on purpose. They use `@example.test` emails, which the public leaderboard filters out — a
 safety net, not a reason to aim it at production.
 
@@ -430,16 +523,14 @@ Render injects `PORT`; the server already reads it.
 
 ## Known gaps
 
-- **Resume after a pause** returns the hand to open play with a fresh idle clock rather than
-  restoring the exact remaining time.
 - No spectator seats beyond the players in the room, and no bots or substitutes for dropped players.
+- **Rate-limited room requests reuse an existing error** (`wrong-phase`, "not available right now"),
+  because a new rejection code needs a client release first. Challenges get `rate-limited`.
+- **No Content-Security-Policy header yet.** The other security headers are set; a CSP needs testing
+  against the Vite build and Google Fonts first.
 
 ### Rated play specifically
 
-- **Abandoning a rated match does not forfeit it.** Dropping mid-answer costs that hand, and after
-  the reconnect grace the room closes — but with no `match-result` there is no Elo change either, so
-  a player losing badly can currently rage-quit to avoid the loss. Fixing it properly means deciding
-  what an abandonment is worth, which is a game-design call rather than a bug.
 - **Sessions cannot be revoked individually** before their 30-day expiry, since they are stateless
   JWTs. Changing the password does sign out every other session: each token carries a short
   fingerprint of the password hash (`pwv`), checked on REST calls and socket sign-in. A socket

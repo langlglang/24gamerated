@@ -16,6 +16,12 @@ describe('daily keys', () => {
     expect(isDailyKey('nope')).toBe(false);
   });
 
+  it('dailyNumber throws on an invalid key instead of returning NaN', () => {
+    for (const bad of ['garbage', '2026-02-30', '2026-13-01', '']) {
+      expect(() => dailyNumber(bad)).toThrow(RangeError);
+    }
+  });
+
   it('seededRandom is deterministic per seed', () => {
     const a = seededRandom('x');
     const b = seededRandom('x');

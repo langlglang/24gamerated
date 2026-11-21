@@ -12,7 +12,9 @@ import {
   isDailyKey,
   previousDailyKey,
   type CombineStep,
+  type DailyGuestSolveResponse,
   type DailyPuzzleView,
+  type DailySolveErrorCode,
   type DailyStatsView,
 } from '@24game/shared';
 import { requireAuth, requireDatabase, type AuthedRequest } from '../auth/routes.js';
@@ -20,6 +22,7 @@ import { bearerFrom, tokenMatchesPassword, verifyToken } from '../auth/tokens.js
 import { dailyElapsedMs, dailySolveTimes, getDailySolve, recordDailyStart, saveDailySolve } from '../db/daily.js';
 import { isDatabaseConfigured } from '../db/pool.js';
 import { findById } from '../db/users.js';
+import { signSolveReceipt, signStartTicket, verifySolveReceipt, verifyStartTicket } from './ticket.js';
 
 const MAX_STEPS = 5;
 
@@ -27,6 +30,10 @@ function isOpenDay(day: unknown): day is string {
   const today = dailyKey();
   // Yesterday too, so a solve started before midnight UTC still counts.
   return isDailyKey(day) && (day === today || day === previousDailyKey(today));
+}
+
+function refuse(res: express.Response, code: DailySolveErrorCode, error: string): void {
+  res.status(400).json({ error, code });
 }
 
 function parseSteps(value: unknown): CombineStep[] | null {
@@ -41,6 +48,29 @@ function parseSteps(value: unknown): CombineStep[] | null {
     steps.push({ aId, bId, op } as CombineStep);
   }
   return steps;
+}
+
+const NO_START_MESSAGE =
+  'We couldn’t confirm when you opened this puzzle, so this solve can’t be timed or counted. Tomorrow’s will be.';
+const TOO_FAST_MESSAGE = 'That was too fast to count. Solves take at least 3 seconds.';
+
+/** Shared checks for a posted solve: open day, readable steps, reaches the target. Sends the refusal itself. */
+function readSolve(req: express.Request, res: express.Response): { day: string; steps: CombineStep[] } | null {
+  const day: unknown = req.body?.day;
+  if (!isOpenDay(day)) {
+    refuse(res, 'closed', 'That puzzle is closed. Today’s is ready to play.');
+    return null;
+  }
+  const steps = parseSteps(req.body?.steps);
+  if (!steps) {
+    refuse(res, 'bad-steps', 'That solution could not be read. Try solving it again.');
+    return null;
+  }
+  if (!checkPuzzleSolution(dailyPuzzle(day), steps).ok) {
+    refuse(res, 'not-target', 'That doesn’t reach the target yet. Keep trying.');
+    return null;
+  }
+  return { day, steps };
 }
 
 async function statsView(day: string, userId: string | null): Promise<DailyStatsView> {
@@ -60,6 +90,7 @@ async function statsView(day: string, userId: string | null): Promise<DailyStats
     solvers: n,
     medianMs,
     buckets: bucketSolveTimes(times),
+    // fasterThanPct is null when the player is the only solver in the pool.
     mine: mineMs === null ? null : { timeMs: mineMs, fasterThanPct: fasterThanPct(mineMs, pool) },
   };
 }
@@ -100,27 +131,33 @@ export function createDailyRouter(): express.Router {
   router.use(express.json({ limit: '16kb' }));
 
   // No database needed: the puzzle is derived from the date.
-  // A signed-in fetch also records when that player first opened the puzzle,
-  // which is where their solve clock starts (see POST /daily/solve).
+  // Every fetch, guest or signed in, carries a signed start ticket (see
+  // ticket.ts); a signed-in fetch also records when that account first opened
+  // the puzzle. POST /daily/solve times the solve from the earlier of the two.
   router.get('/daily/puzzle', async (req, res) => {
     try {
-      const day = dailyKey();
+      const now = Date.now();
+      const day = dailyKey(new Date(now));
       const p = dailyPuzzle(day);
-      const view: DailyPuzzleView = { day, number: dailyNumber(day), cards: p.cards, target: p.target };
-      if (req.headers.authorization) {
-        res.set('Cache-Control', 'private, no-store');
-        if (isDatabaseConfigured()) {
-          try {
-            const userId = await optionalUserId(req);
-            if (userId) await recordDailyStart(userId, day);
-          } catch (err) {
-            console.error('[daily] recording start failed:', err);
-          }
-        }
-      } else {
-        res.set('Cache-Control', 'public, max-age=300');
-      }
+      const view: DailyPuzzleView = {
+        day,
+        number: dailyNumber(day),
+        cards: p.cards,
+        target: p.target,
+        startTicket: signStartTicket(day, now),
+      };
+      // Never cached: each response carries its own start ticket, and a cached
+      // copy could outlive midnight UTC and hand out yesterday's puzzle.
+      res.set('Cache-Control', 'private, no-store');
       res.set('Vary', 'Authorization');
+      if (req.headers.authorization && isDatabaseConfigured()) {
+        try {
+          const userId = await optionalUserId(req);
+          if (userId) await recordDailyStart(userId, day);
+        } catch (err) {
+          console.error('[daily] recording start failed:', err);
+        }
+      }
       res.json(view);
     } catch (err) {
       console.error('[daily] puzzle failed:', err);
@@ -128,45 +165,76 @@ export function createDailyRouter(): express.Router {
     }
   });
 
-  router.post('/daily/solve', requireDatabase, requireAuth, async (req: AuthedRequest, res) => {
-    const day: unknown = req.body?.day;
-    const timeMs: unknown = req.body?.timeMs;
-    if (!isOpenDay(day)) {
-      res.status(400).json({ error: 'That puzzle is closed. Today’s is ready to play.' });
-      return;
-    }
-    const steps = parseSteps(req.body?.steps);
-    if (!steps) {
-      res.status(400).json({ error: 'That solution could not be read. Try solving it again.' });
-      return;
-    }
-    if (typeof timeMs !== 'number' || !Number.isFinite(timeMs) || timeMs > MAX_SOLVE_MS) {
-      res.status(400).json({ error: 'That solve time could not be read. Try solving it again.' });
-      return;
-    }
-    if (timeMs < MIN_SOLVE_MS) {
-      res.status(400).json({ error: 'That was too fast to count. Solves take at least 3 seconds.' });
-      return;
-    }
+  // A guest's solve: checked and stamped, not stored (no account). The receipt
+  // pins when it happened, so posting it after signing in doesn't count the
+  // time spent signing in. Needs a valid start ticket, like any timed solve.
+  router.post('/daily/guest-solve', (req, res) => {
     try {
-      if (!checkPuzzleSolution(dailyPuzzle(day), steps).ok) {
-        res.status(400).json({ error: 'That doesn’t reach the target yet. Keep trying.' });
+      const solve = readSolve(req, res);
+      if (!solve) return;
+      const now = Date.now();
+      const startedAt = verifyStartTicket(req.body?.startTicket, solve.day, now);
+      if (startedAt === null) {
+        refuse(res, 'no-start', NO_START_MESSAGE);
         return;
       }
-      // Time rule: if we recorded when this player opened the puzzle (signed-in
-      // GET /daily/puzzle), the server clock is authoritative and the stored time
-      // is the elapsed time since then, whatever the client claims. Without a
-      // start (e.g. solved as a guest, then signed in) the claimed time is used.
-      // Either way it must be at least MIN_SOLVE_MS.
-      const elapsed = await dailyElapsedMs(req.user!.id, day);
-      const storedMs = Math.min(Math.round(elapsed ?? timeMs), MAX_SOLVE_MS);
-      if (storedMs < MIN_SOLVE_MS) {
-        res.status(400).json({ error: 'That was too fast to count. Solves take at least 3 seconds.' });
+      const timeMs = Math.min(now - startedAt, MAX_SOLVE_MS);
+      if (timeMs < MIN_SOLVE_MS) {
+        refuse(res, 'too-fast', TOO_FAST_MESSAGE);
         return;
       }
+      const body: DailyGuestSolveResponse = { timeMs, solveReceipt: signSolveReceipt(solve.day, startedAt, now) };
+      res.set('Cache-Control', 'private, no-store');
+      res.json(body);
+    } catch (err) {
+      console.error('[daily] guest solve failed:', err);
+      res.status(500).json({ error: 'Could not check your solve. Try again in a moment.' });
+    }
+  });
+
+  router.post('/daily/solve', requireDatabase, requireAuth, async (req: AuthedRequest, res) => {
+    // The client's claimed `timeMs` is not used for anything: the stored time
+    // is always measured by the server (below), so it is not validated either.
+    try {
+      const solve = readSolve(req, res);
+      if (!solve) return;
+      const { day, steps } = solve;
+      const userId = req.user!.id;
       // First solve stands; a repeat just returns the current stats.
-      await saveDailySolve(req.user!.id, day, storedMs, steps);
-      res.json(await statsView(day, req.user!.id));
+      if (await getDailySolve(userId, day)) {
+        res.json(await statsView(day, userId));
+        return;
+      }
+      // Time rule (all server clocks, the client's claim is ignored):
+      //   start = the earliest of: when this account first fetched the puzzle
+      //           signed in (daily_starts), a valid start ticket's issue time,
+      //           and a valid solve receipt's start;
+      //   end   = a valid solve receipt's finish (the guest solved, then signed
+      //           in), otherwise now.
+      // With no start at all the solve can't be timed: refused, not stored, so
+      // it never reaches the curve.
+      const accountElapsed = await dailyElapsedMs(userId, day);
+      const now = Date.now();
+      const receipt = verifySolveReceipt(req.body?.solveReceipt, day, now);
+      const starts = [
+        accountElapsed === null ? null : now - accountElapsed,
+        verifyStartTicket(req.body?.startTicket, day, now),
+        receipt?.startedAt ?? null,
+      ].filter((t): t is number => t !== null);
+      if (starts.length === 0) {
+        refuse(res, 'no-start', NO_START_MESSAGE);
+        return;
+      }
+      const elapsed = (receipt ? receipt.solvedAt : now) - Math.min(...starts);
+      // Validate the time actually used: at least MIN_SOLVE_MS; anything past a
+      // day (only possible on yesterday's puzzle) is recorded as the maximum.
+      const storedMs = Math.min(Math.round(elapsed), MAX_SOLVE_MS);
+      if (storedMs < MIN_SOLVE_MS) {
+        refuse(res, 'too-fast', TOO_FAST_MESSAGE);
+        return;
+      }
+      await saveDailySolve(userId, day, storedMs, steps);
+      res.json(await statsView(day, userId));
     } catch (err) {
       console.error('[daily] solve failed:', err);
       res.status(500).json({ error: 'Could not save your solve. Try again in a moment.' });

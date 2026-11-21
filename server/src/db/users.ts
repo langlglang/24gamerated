@@ -97,17 +97,60 @@ export interface LeaderboardEntry extends PublicUser {
 }
 
 /**
+ * example.test (RFC 2606-style reserved) is where test accounts live: the
+ * smoke scripts register there. Matches a domain of example.test or any
+ * subdomain of it, with or without a trailing dot, case-insensitively:
+ * x@example.test, x@EXAMPLE.TEST, x@example.test., x@qa.example.test.
+ * Not x@notexample.test or x@example.testing.com.
+ *
+ * One pattern, used both as a JS RegExp and as a Postgres POSIX regex, so the
+ * two can never disagree.
+ */
+export const TEST_EMAIL_PATTERN = '@([^@]*\\.)?example\\.test\\.?$';
+
+const TEST_EMAIL_REGEX = new RegExp(TEST_EMAIL_PATTERN, 'i');
+
+/** True for a test account's email. */
+export function isTestEmail(email: string): boolean {
+  return TEST_EMAIL_REGEX.test(email.trim());
+}
+
+/**
+ * SQL boolean expression: true when `column` holds a test account's email.
+ * `column` is interpolated as-is, so only ever pass a trusted column name
+ * (e.g. 'email_lower' or 'u.email_lower'), never user input. Use
+ * `NOT ${testEmailSql('u.email_lower')}` to hide test accounts.
+ */
+export function testEmailSql(column: string): string {
+  return `(${column} ~* '${TEST_EMAIL_PATTERN}')`;
+}
+
+/**
+ * Standard competition ranking ("1224"): equal ratings share a rank, and the
+ * next distinct rating skips the places they took. Expects rows sorted by
+ * rating, highest first.
+ */
+export function competitionRanks(ratings: readonly number[]): number[] {
+  const ranks: number[] = [];
+  ratings.forEach((rating, i) => {
+    ranks.push(i > 0 && rating === ratings[i - 1] ? ranks[i - 1]! : i + 1);
+  });
+  return ranks;
+}
+
+/**
  * Ranked by rating. Provisional accounts are included but flagged, so a new
- * player who wins twice does not look like a genuine number one.
+ * player who wins twice does not look like a genuine number one. Tied ratings
+ * share a rank; within a tie, more games played lists first.
  */
 export async function leaderboard(limit = 25): Promise<LeaderboardEntry[]> {
   const rows = await query<UserRow>(
-    // example.test is reserved for test accounts (the smoke scripts use it),
-    // so they never show up on the public board.
+    // Test accounts never show up on the public board.
     `SELECT ${COLUMNS} FROM users
-      WHERE rated_games > 0 AND email_lower NOT LIKE '%@example.test'
+      WHERE rated_games > 0 AND NOT ${testEmailSql('email_lower')}
      ORDER BY rating DESC, rated_games DESC, username ASC LIMIT $1`,
     [limit],
   );
-  return rows.map((row, i) => ({ ...toPublicUser(row), rank: i + 1 }));
+  const ranks = competitionRanks(rows.map((row) => row.rating));
+  return rows.map((row, i) => ({ ...toPublicUser(row), rank: ranks[i]! }));
 }

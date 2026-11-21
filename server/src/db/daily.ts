@@ -1,4 +1,5 @@
 import { query, queryOne } from './pool.js';
+import { testEmailSql } from './users.js';
 
 /**
  * Record a player's solve for a day. Returns false when they already had one:
@@ -26,7 +27,7 @@ export async function getDailySolve(
   day: string,
 ): Promise<{ timeMs: number; isTestAccount: boolean } | null> {
   const row = await queryOne<{ time_ms: number; is_test: boolean }>(
-    `SELECT d.time_ms, (u.email_lower LIKE '%@example.test') AS is_test
+    `SELECT d.time_ms, ${testEmailSql('u.email_lower')} AS is_test
        FROM daily_solves d
        JOIN users u ON u.id = d.user_id
       WHERE d.user_id = $1 AND d.day = $2`,
@@ -54,8 +55,8 @@ export async function dailyElapsedMs(userId: string, day: string): Promise<numbe
 }
 
 /**
- * Every solve time for a day, fastest first. Test accounts (@example.test)
- * are left out, same as the rated leaderboard.
+ * Every solve time for a day, fastest first. Test accounts (@example.test,
+ * any subdomain of it, trailing dot allowed) are left out, same as the rated leaderboard.
  * TODO: at large scale, pre-aggregate (histogram per day) instead of loading every row.
  */
 export async function dailySolveTimes(day: string): Promise<number[]> {
@@ -63,7 +64,7 @@ export async function dailySolveTimes(day: string): Promise<number[]> {
     `SELECT d.time_ms
        FROM daily_solves d
        JOIN users u ON u.id = d.user_id
-      WHERE d.day = $1 AND u.email_lower NOT LIKE '%@example.test'
+      WHERE d.day = $1 AND NOT ${testEmailSql('u.email_lower')}
    ORDER BY d.time_ms`,
     [day],
   );

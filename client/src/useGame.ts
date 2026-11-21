@@ -21,6 +21,8 @@ const SESSION_KEY = '24game.session';
 interface StoredSession {
   roomCode: string;
   playerId: string;
+  /** Secret the server issued for this seat; required to reclaim it. */
+  reconnectToken?: string;
   name: string;
   /** Rated seat: rejoin only after the socket has been identified. */
   rated?: boolean;
@@ -52,7 +54,7 @@ const REJECTION_TEXT: Record<ActionRejection, string> = {
   'locked-out': 'You are locked out of this hand.',
   'not-your-turn': 'It is not your turn.',
   'room-full': 'That room is full.',
-  'room-not-found': 'No room with that code.',
+  'room-not-found': 'No room with that code. Check it with the host; the game may have ended.',
   'name-taken': 'That name is already taken in this room.',
   'wrong-player-count': 'The player count does not match the selected mode.',
   'teams-unbalanced': 'Teams must be 2 and 2.',
@@ -112,22 +114,54 @@ export function useGame(token: string | null): GameApi {
   const [ratedResult, setRatedResult] = useState<RatedResultView | null>(null);
   const [matchFound, setMatchFound] = useState<GameApi['matchFound']>(null);
 
+  /**
+   * The room this client believes it is in, and the one it just left. The
+   * server broadcasts the room's state to everyone (us included) while it
+   * handles our room:leave, so that last snapshot arrives after we have
+   * already cleared ours. Without this guard it put a dead seat back on
+   * screen ("You lose", us listed offline, "Recording your rating…").
+   */
+  const currentRoomRef = useRef<string | null>(loadSession()?.roomCode ?? null);
+  const leftRoomRef = useRef<string | null>(null);
+
+  /**
+   * The ONE place a seat is stored. Everything that identifies us to a room
+   * on reconnect is saved here and sent back from rejoin() below.
+   */
+  const adoptSeat = useCallback((session: StoredSession | null) => {
+    saveSession(session);
+    setPlayerId(session?.playerId ?? null);
+    currentRoomRef.current = session?.roomCode ?? null;
+    if (session) leftRoomRef.current = null;
+  }, []);
+
   const rejoin = useCallback(
     (session: StoredSession) => {
       socket.emit(
         'room:join',
-        { name: session.name, roomCode: session.roomCode, playerId: session.playerId },
+        {
+          name: session.name,
+          roomCode: session.roomCode,
+          playerId: session.playerId,
+          ...(session.reconnectToken ? { reconnectToken: session.reconnectToken } : {}),
+        },
         (res) => {
-          if (res.ok) setPlayerId(res.playerId);
+          if (res.ok) {
+            adoptSeat({
+              ...session,
+              roomCode: res.roomCode,
+              playerId: res.playerId,
+              reconnectToken: res.reconnectToken,
+            });
+          }
           else {
-            saveSession(null);
-            setPlayerId(null);
+            adoptSeat(null);
             setState(null);
           }
         },
       );
     },
-    [socket],
+    [socket, adoptSeat],
   );
 
   useEffect(() => {
@@ -145,17 +179,23 @@ export function useGame(token: string | null): GameApi {
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
-    socket.on('state', setState);
+    socket.on('state', (next) => {
+      // A late snapshot of the room we just walked out of: drop it.
+      if (next.roomCode === leftRoomRef.current) return;
+      currentRoomRef.current = next.roomCode;
+      setState(next);
+    });
     socket.on('rejected', ({ reason }) => setNotice(REJECTION_TEXT[reason] ?? 'Action rejected.'));
     socket.on('combineRejected', ({ error }) => {
       errorNonce.current += 1;
       setCombineError({ message: describeValidationError(error), nonce: errorNonce.current });
     });
     socket.on('roomClosed', ({ reason }) => {
-      setNotice(`Room closed: ${reason}`);
-      saveSession(null);
+      // A room we already left closing (e.g. we were the last one out of a
+      // lobby) is not news to us.
+      if (currentRoomRef.current) setNotice(`Room closed: ${reason}`);
+      adoptSeat(null);
       setState(null);
-      setPlayerId(null);
     });
 
     socket.on('profile', setProfile);
@@ -180,15 +220,27 @@ export function useGame(token: string | null): GameApi {
       // Without our seat id the game can't tell which player we are, and
       // buzz / no-solution stay disabled. Saving it also lets a refresh
       // reclaim the seat (the server checks we're the signed-in owner).
-      setPlayerId(payload.playerId);
-      saveSession({
+      adoptSeat({
         roomCode: payload.roomCode,
         playerId: payload.playerId,
+        reconnectToken: payload.reconnectToken,
         name: 'Player',
         rated: true,
       });
     });
-    socket.on('ratedResult', setRatedResult);
+    // Can arrive again after a refresh on the result screen; same match, same result.
+    socket.on('ratedResult', (result) =>
+      setRatedResult((prev) => (prev && prev.matchId === result.matchId ? prev : result)),
+    );
+    socket.on('seatReplaced', () => {
+      // A newer connection (normally this player's other tab) took the seat.
+      // Forget it here, but leave the stored session alone: that tab uses it.
+      setPlayerId(null);
+      currentRoomRef.current = null;
+      setState(null);
+      setMatchFound(null);
+      setNotice('This game continued in another tab.');
+    });
 
     if (socket.connected) onConnect();
 
@@ -205,8 +257,9 @@ export function useGame(token: string | null): GameApi {
       socket.off('challengeUpdated');
       socket.off('ratedMatchFound');
       socket.off('ratedResult');
+      socket.off('seatReplaced');
     };
-  }, [socket]);
+  }, [socket, rejoin, adoptSeat]);
 
   // A new hand clears any stale illegal-move message.
   const handNumber = state?.handNumber;
@@ -219,15 +272,14 @@ export function useGame(token: string | null): GameApi {
       new Promise<string | null>((resolve) => {
         socket.emit('room:create', { name, mode, rules }, (res) => {
           if (res.ok) {
-            saveSession({ roomCode: res.roomCode, playerId: res.playerId, name });
-            setPlayerId(res.playerId);
+            adoptSeat({ roomCode: res.roomCode, playerId: res.playerId, reconnectToken: res.reconnectToken, name });
             resolve(null);
           } else {
             resolve(REJECTION_TEXT[res.error]);
           }
         });
       }),
-    [socket],
+    [socket, adoptSeat],
   );
 
   const joinRoom = useCallback(
@@ -235,24 +287,31 @@ export function useGame(token: string | null): GameApi {
       new Promise<string | null>((resolve) => {
         socket.emit('room:join', { name, roomCode }, (res) => {
           if (res.ok) {
-            saveSession({ roomCode: res.roomCode, playerId: res.playerId, name });
-            setPlayerId(res.playerId);
+            adoptSeat({ roomCode: res.roomCode, playerId: res.playerId, reconnectToken: res.reconnectToken, name });
             resolve(null);
           } else {
             resolve(REJECTION_TEXT[res.error]);
           }
         });
       }),
-    [socket],
+    [socket, adoptSeat],
   );
 
+  /**
+   * Walk out of the current room for good: the server frees or pauses the
+   * seat, the stored session is wiped (so a reload, a new tab or another
+   * route no longer pulls us back in), and all room UI state is cleared in
+   * the same render.
+   */
   const leave = useCallback(() => {
+    leftRoomRef.current = currentRoomRef.current;
     socket.emit('room:leave');
-    saveSession(null);
+    adoptSeat(null);
     setState(null);
-    setPlayerId(null);
     setMatchFound(null);
-  }, [socket]);
+    setRatedResult(null);
+    setCombineError(null);
+  }, [socket, adoptSeat]);
 
   // Bind the signed-in identity to this socket whenever the token changes, and
   // re-bind on reconnect so a dropped connection does not silently sign out.
