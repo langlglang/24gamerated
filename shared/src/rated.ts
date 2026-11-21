@@ -86,7 +86,8 @@ export type RatedRejection =
   | 'cannot-challenge-self'
   | 'challenge-not-found'
   | 'opponent-offline'
-  | 'opponent-busy';
+  | 'opponent-busy'
+  | 'rate-limited';
 
 export const RATED_REJECTION_TEXT: Readonly<Record<RatedRejection, string>> = {
   'not-signed-in': 'Sign in to play rated games.',
@@ -98,4 +99,5 @@ export const RATED_REJECTION_TEXT: Readonly<Record<RatedRejection, string>> = {
   'challenge-not-found': 'That challenge is no longer available.',
   'opponent-offline': 'That player is not online right now.',
   'opponent-busy': 'That player is already in a game.',
+  'rate-limited': 'Too many challenges. Wait a minute and try again.',
 };

@@ -59,10 +59,16 @@ export class Matchmaker {
     return this.queue.has(userId);
   }
 
-  /** Keep a queued player's socket current across a reconnect. */
-  updateSocket(userId: string, socketId: string): void {
+  /**
+   * Leave only if `socketId` is the connection that queued. A player with two
+   * tabs open must not lose the search started in one by closing (or signing
+   * out in) the other. Returns true when an entry was removed.
+   */
+  leaveIfOwner(userId: string, socketId: string): boolean {
     const entry = this.queue.get(userId);
-    if (entry) entry.socketId = socketId;
+    if (!entry || entry.socketId !== socketId) return false;
+    this.queue.delete(userId);
+    return true;
   }
 
   get size(): number {
@@ -89,11 +95,13 @@ export class Matchmaker {
 
     for (let i = 0; i < waiting.length - 1; i++) {
       const a = waiting[i]!;
-      if (paired.has(a.userId)) continue;
+      // onPair may requeue players (re-entering tick), so skip anyone no
+      // longer waiting rather than pairing them twice.
+      if (paired.has(a.userId) || !this.queue.has(a.userId)) continue;
 
       for (let j = i + 1; j < waiting.length; j++) {
         const b = waiting[j]!;
-        if (paired.has(b.userId)) continue;
+        if (paired.has(b.userId) || !this.queue.has(b.userId)) continue;
 
         const gap = Math.abs(a.rating - b.rating);
         const mutual = Math.min(bandFor(now - a.joinedAt), bandFor(now - b.joinedAt));

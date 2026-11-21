@@ -144,4 +144,24 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    name: '006_rated_one_pending_challenge',
+    sql: `
+      -- At most one pending challenge per (from, to) pair, so two sends racing
+      -- each other cannot both insert. Older duplicates are expired first,
+      -- keeping the newest, or the index could not be built.
+      UPDATE challenges c
+         SET status = 'expired', responded_at = now()
+       WHERE c.status = 'pending'
+         AND EXISTS (
+           SELECT 1 FROM challenges d
+            WHERE d.from_user = c.from_user AND d.to_user = c.to_user
+              AND d.status = 'pending'
+              AND (d.created_at, d.id) > (c.created_at, c.id)
+         );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS challenges_one_pending_per_pair
+        ON challenges (from_user, to_user) WHERE status = 'pending';
+    `,
+  },
 ];
