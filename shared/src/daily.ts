@@ -182,3 +182,19 @@ export interface DailyTodayView {
   readonly mine: DailyResultView | null;
   readonly friends: readonly DailyFriendView[];
 }
+
+export interface DailyLeaderboardEntry {
+  readonly rank: number;
+  readonly userId: string;
+  readonly username: string;
+  readonly correct: number;
+  readonly timeMs: number;
+}
+
+export interface DailyLeaderboardView {
+  readonly day: string;
+  readonly number: number;
+  /** Everyone who has finished today's daily, not just the top of the list. */
+  readonly players: number;
+  readonly entries: readonly DailyLeaderboardEntry[];
+}

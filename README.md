@@ -123,6 +123,9 @@ day after day.
 - **Friends.** Signed-in players follow friends by username. The daily screen shows each friend's
   result for today (hidden until you've played yourself) and your all-time record against them
   over every day you both played.
+- **Today's leaderboard.** Everyone's best result for the day: most hands right, then fastest, then
+  first to finish. It's public (`GET /api/daily/leaderboard`), but the screen only shows the list
+  once you've finished your own run. Test accounts (`@example.test`) are left off.
 - **Guests** can play and get a share line. When they sign in, the run is saved to their account.
 
 API (all need an account): `GET /api/daily/today`, `POST /api/daily/submit` (today's or yesterday's

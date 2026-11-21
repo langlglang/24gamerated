@@ -12,6 +12,7 @@ import {
   type DailyFriendView,
   type DailyHandRecord,
   type DailyResultView,
+  type DailyLeaderboardView,
   type DailyTodayView,
 } from '@24game/shared';
 import { apiDelete, apiGet, apiPost } from '../api.js';
@@ -93,6 +94,84 @@ function ResultGrid({ hands }: { hands: readonly boolean[] }) {
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * Today's top results for everyone. Hidden until you've finished your own run,
+ * like friends' scores, so nobody plays chasing a time they've already seen.
+ */
+function DailyLeaderboard({
+  board,
+  unlocked,
+  meId,
+  signedIn,
+}: {
+  board: DailyLeaderboardView | null;
+  unlocked: boolean;
+  meId: string | null;
+  signedIn: boolean;
+}) {
+  const players = board?.players ?? 0;
+  return (
+    <section className="flex flex-col gap-3" aria-labelledby="daily-board-title">
+      <div className="rule flex items-baseline justify-between pt-4">
+        <h2 id="daily-board-title" className="font-display text-2xl font-extrabold">
+          Today’s leaderboard
+        </h2>
+        <span className="text-sm text-muted">
+          {players} {players === 1 ? 'player' : 'players'}
+        </span>
+      </div>
+      {!board ? (
+        <p className="text-sm text-muted">The leaderboard isn’t available right now.</p>
+      ) : !unlocked ? (
+        <p className="text-sm text-muted">
+          {players === 0
+            ? 'Nobody has finished today’s daily yet. Be the first on the board.'
+            : 'Finish today’s daily to see where you’d rank.'}
+        </p>
+      ) : board.entries.length === 0 ? (
+        <p className="text-sm text-muted">
+          {signedIn
+            ? 'Nobody’s on the board yet. Your result will show up here once it’s saved.'
+            : 'Nobody’s on the board yet. Sign in to save your result and take the top spot.'}
+        </p>
+      ) : (
+        <>
+          <ol className="divide-y divide-line border-y border-ink">
+            {board.entries.map((e) => {
+              const mine = e.userId === meId;
+              return (
+                <li
+                  key={e.userId}
+                  className={[
+                    'flex items-center justify-between gap-3 px-1 py-2 text-sm',
+                    mine ? 'bg-mark' : '',
+                  ].join(' ')}
+                >
+                  <span className="flex min-w-0 items-baseline gap-3">
+                    <span className="w-6 shrink-0 text-right tabular-nums text-muted">{e.rank}</span>
+                    <span className={`truncate ${mine ? 'font-semibold' : ''}`}>
+                      {e.username}
+                      {mine && <span className="text-muted"> (you)</span>}
+                    </span>
+                  </span>
+                  <span className="shrink-0 tabular-nums">
+                    <span className="font-display text-lg font-extrabold">{e.correct}</span>
+                    <span className="text-muted">/{HANDS_PER_MATCH}</span>
+                    <span className="ml-2 text-muted">{formatDailyTime(e.timeMs)}</span>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+          {!signedIn && (
+            <p className="text-xs text-muted">Sign in to save your result and appear here.</p>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -273,6 +352,16 @@ export function Daily({
   const localScore = finished ? scoreDaily(day, local.records) : null;
   const myResult: DailyResultView | null = view?.mine ?? localScore;
 
+  const [board, setBoard] = useState<DailyLeaderboardView | null>(null);
+  const loadBoard = useCallback(async () => {
+    const res = await apiGet<DailyLeaderboardView>('/api/daily/leaderboard');
+    setBoard(res.ok ? res.data : null);
+  }, []);
+  // Reload whenever the saved result changes, so your new row appears.
+  useEffect(() => {
+    void loadBoard();
+  }, [loadBoard, view?.mine]);
+
   const refresh = useCallback(async () => {
     setView(null);
     if (!auth.token) return;
@@ -394,6 +483,13 @@ export function Daily({
           {error}
         </p>
       )}
+
+      <DailyLeaderboard
+        board={board}
+        unlocked={Boolean(myResult)}
+        meId={auth.user?.id ?? null}
+        signedIn={signedIn}
+      />
 
       {signedIn ? (
         view && (
