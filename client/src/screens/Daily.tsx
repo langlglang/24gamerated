@@ -5,17 +5,79 @@ import {
   checkPuzzleSolution,
   dailyKey,
   formatDailyTime,
+  previousDailyKey,
   puzzleShareText,
   tableFromCards,
   type CombineStep,
+  type DailyGuestSolveResponse,
   type DailyPuzzleView,
+  type DailySolveErrorCode,
+  type DailySolveRequest,
   type DailyStatsView,
   type SolveTimeBucket,
   type TableCard,
 } from '@24game/shared';
-import { apiGet, apiPost } from '../api.js';
 import { CombineBoard } from '../components/CombineBoard.js';
 import type { AuthApi } from '../useAuth.js';
+
+// ------------------------------------------------------------ requests
+
+type DailyResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; status: number; error: string; code: DailySolveErrorCode | null };
+
+/**
+ * Like api.ts, but never served from the HTTP cache (a cached puzzle could be
+ * yesterday's, and every puzzle response carries its own start ticket) and it
+ * keeps the server's error `code`, which says whether a refusal is final.
+ */
+async function dailyRequest<T>(
+  method: 'GET' | 'POST',
+  path: string,
+  token: string | null,
+  body?: unknown,
+): Promise<DailyResult<T>> {
+  try {
+    const response = await fetch(path, {
+      method,
+      cache: 'no-store',
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    const json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        error: String(json['error'] ?? 'Something went wrong.'),
+        code: typeof json['code'] === 'string' ? (json['code'] as DailySolveErrorCode) : null,
+      };
+    }
+    return { ok: true, data: json as T };
+  } catch {
+    return { ok: false, status: 0, error: 'Could not reach the server.', code: null };
+  }
+}
+
+/** Refusals that retrying can never fix. Everything else (401, too-fast, 5xx, network) is retried. */
+const FINAL_CODES: readonly DailySolveErrorCode[] = ['closed', 'bad-steps', 'not-target', 'no-start'];
+const isFinalRefusal = (res: { status: number; code: DailySolveErrorCode | null }) =>
+  res.status === 400 && res.code !== null && FINAL_CODES.includes(res.code);
+
+function postSolve(day: string, local: LocalPuzzle, token: string): Promise<DailyResult<DailyStatsView>> {
+  const body: DailySolveRequest = {
+    day,
+    steps: local.solved?.steps ?? [],
+    startTicket: local.startTicket ?? null,
+    solveReceipt: local.solveReceipt ?? null,
+    timeMs: local.solved?.timeMs,
+  };
+  return dailyRequest<DailyStatsView>('POST', '/api/daily/solve', token, body);
+}
 
 // ------------------------------------------------------------ local progress
 
@@ -25,30 +87,66 @@ import type { AuthApi } from '../useAuth.js';
  */
 interface LocalPuzzle {
   startedAt: number;
+  /**
+   * The server's signed start ticket from the first fetch of this day's
+   * puzzle on this run. The server times the solve from it, so it travels
+   * with the run when a guest signs in.
+   */
+  startTicket?: string | null;
+  /**
+   * Guest solves only: the server's stamp of when the solve happened, so
+   * posting it after signing in doesn't count the time spent signing in.
+   */
+  solveReceipt?: string | null;
   solved: { timeMs: number; steps: CombineStep[] } | null;
   /** The server has recorded this solve (signed-in only). */
   submitted: boolean;
-  /** The server definitively refused this solve (4xx other than 401): don't re-POST. */
+  /** The server definitively refused this solve (a final 400, see FINAL_CODES): don't re-POST. */
   submitError?: string | null;
 }
 
 const storageKey = (day: string, owner: string) => `24game.puzzle.${day}.${owner}`;
 
+/**
+ * In-memory copy, so a browser that blocks localStorage still keeps the run
+ * (and its start ticket) across the remount that signing in causes.
+ */
+const memoryStore = new Map<string, string>();
+
 function loadLocal(day: string, owner: string): LocalPuzzle | null {
+  const k = storageKey(day, owner);
   try {
-    const raw = localStorage.getItem(storageKey(day, owner));
+    const raw = localStorage.getItem(k) ?? memoryStore.get(k);
     if (raw) return JSON.parse(raw) as LocalPuzzle;
   } catch {
-    // Unreadable or blocked storage: start fresh.
+    try {
+      const raw = memoryStore.get(k);
+      if (raw) return JSON.parse(raw) as LocalPuzzle;
+    } catch {
+      // Unreadable: start fresh.
+    }
   }
   return null;
 }
 
 function saveLocal(day: string, owner: string, value: LocalPuzzle): void {
+  const k = storageKey(day, owner);
+  const raw = JSON.stringify(value);
+  memoryStore.set(k, raw);
   try {
-    localStorage.setItem(storageKey(day, owner), JSON.stringify(value));
+    localStorage.setItem(k, raw);
   } catch {
     // Private mode: the clock just won't survive a refresh.
+  }
+}
+
+function removeLocal(day: string, owner: string): void {
+  const k = storageKey(day, owner);
+  memoryStore.delete(k);
+  try {
+    localStorage.removeItem(k);
+  } catch {
+    // Ignore: worst case the copy lingers.
   }
 }
 
@@ -67,12 +165,31 @@ function loadFor(day: string, owner: string): LocalPuzzle | null {
   if (own && !(guest.solved && !own.solved)) return own;
   const claimed: LocalPuzzle = { ...guest, submitted: false, submitError: null };
   saveLocal(day, owner, claimed);
-  try {
-    localStorage.removeItem(storageKey(day, 'guest'));
-  } catch {
-    // Ignore: worst case the guest copy lingers.
-  }
+  removeLocal(day, 'guest');
   return claimed;
+}
+
+/**
+ * Right after sign-in: hand any solved guest run from this device (today's or
+ * yesterday's) to the account and post it, BEFORE the signed-in puzzle fetch
+ * records a fresh start for the account. The guest's own start ticket goes
+ * with it, so the server times it from when the guest actually began.
+ * A final refusal is remembered; anything else is retried when the result shows.
+ */
+async function submitPendingGuestSolves(owner: string, token: string): Promise<void> {
+  const today = dailyKey();
+  for (const day of [today, previousDailyKey(today)]) {
+    if (!loadLocal(day, 'guest')?.solved) continue;
+    const run = loadFor(day, owner);
+    if (!run?.solved || run.submitted || run.submitError) continue;
+    const res = await postSolve(day, run, token);
+    if (res.ok) {
+      const timeMs = res.data.mine?.timeMs ?? run.solved.timeMs;
+      saveLocal(day, owner, { ...run, solved: { ...run.solved, timeMs }, submitted: true, submitError: null });
+    } else if (isFinalRefusal(res)) {
+      saveLocal(day, owner, { ...run, submitError: res.error });
+    }
+  }
 }
 
 // ------------------------------------------------------------ helpers
@@ -149,17 +266,21 @@ export function Daily({ auth, onExit, onSignIn }: Props) {
   const [newDayOut, setNewDayOut] = useState(false);
   const [solvedNow, setSolvedNow] = useState(false);
 
-  // Fetched with the token so the server starts this account's clock.
+  // Fetched with the token so the server also starts this account's clock;
+  // every fetch carries a signed start ticket. A solved guest run is posted
+  // first, so the signed-in fetch can't get ahead of it.
   const loadPuzzle = useCallback(async () => {
     const seq = ++loadSeq.current;
     setLoadError(null);
-    const res = await apiGet<DailyPuzzleView>('/api/daily/puzzle', token);
+    if (token && owner !== 'guest') await submitPendingGuestSolves(owner, token);
+    if (seq !== loadSeq.current) return;
+    const res = await dailyRequest<DailyPuzzleView>('GET', '/api/daily/puzzle', token);
     if (seq !== loadSeq.current) return;
     if (res.ok) {
       setPuzzle(res.data);
       setNewDayOut(false);
     } else setLoadError('Today’s puzzle didn’t load. Check your connection and try again.');
-  }, [token]);
+  }, [token, owner]);
 
   // Wait for auth, then (re)fetch whenever the signed-in account changes.
   useEffect(() => {
@@ -252,8 +373,23 @@ interface GameProps {
 function PuzzleGame({ puzzle, owner, signedIn, token, onSignIn, onSolvedChange }: GameProps) {
   const [local, setLocal] = useState<LocalPuzzle>(() => {
     const stored = loadFor(puzzle.day, owner);
-    if (stored) return stored;
-    const fresh: LocalPuzzle = { startedAt: Date.now(), solved: null, submitted: false };
+    if (stored) {
+      // A run from before start tickets existed: give it this fetch's ticket,
+      // but only while unsolved (a fresh ticket on a finished solve would time
+      // it from now).
+      if (!stored.startTicket && !stored.solved && puzzle.startTicket) {
+        const withTicket = { ...stored, startTicket: puzzle.startTicket };
+        saveLocal(puzzle.day, owner, withTicket);
+        return withTicket;
+      }
+      return stored;
+    }
+    const fresh: LocalPuzzle = {
+      startedAt: Date.now(),
+      startTicket: puzzle.startTicket ?? null,
+      solved: null,
+      submitted: false,
+    };
     saveLocal(puzzle.day, owner, fresh);
     return fresh;
   });
@@ -287,6 +423,13 @@ function PuzzleGame({ puzzle, owner, signedIn, token, onSignIn, onSolvedChange }
           })
         }
         onSubmitError={(message) => update({ ...local, submitError: message })}
+        onReceipt={(receipt, timeMs) =>
+          update({
+            ...local,
+            solveReceipt: receipt,
+            solved: local.solved ? { ...local.solved, timeMs } : local.solved,
+          })
+        }
       />
     );
   }
@@ -405,6 +548,7 @@ function Solved({
   onSignIn,
   onSubmitted,
   onSubmitError,
+  onReceipt,
 }: {
   puzzle: DailyPuzzleView;
   local: LocalPuzzle;
@@ -414,37 +558,47 @@ function Solved({
   onSignIn: () => void;
   onSubmitted: (serverTimeMs: number | undefined) => void;
   onSubmitError: (message: string) => void;
+  onReceipt: (receipt: string, serverTimeMs: number) => void;
 }) {
   const [state, setState] = useState<StatsState>({ kind: 'idle' });
   const [copied, setCopied] = useState(false);
-  const started = useRef(false);
+  // Bumped by "Try again"; the effect below runs once per value.
+  const [attempt, setAttempt] = useState(0);
+  const ranAttempt = useRef(-1);
 
-  // A sign-in problem or a definitive refusal; the curve still shows (estimate).
-  const [submitNote, setSubmitNote] = useState<{ kind: 'auth' } | { kind: 'refused'; message: string } | null>(
-    local.submitError ? { kind: 'refused', message: local.submitError } : null,
-  );
+  // A sign-in problem, a final refusal, or a failure worth retrying; the curve still shows (estimate).
+  const [submitNote, setSubmitNote] = useState<
+    { kind: 'auth' } | { kind: 'refused'; message: string } | { kind: 'retry'; message: string } | null
+  >(local.submitError ? { kind: 'refused', message: local.submitError } : null);
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
+    if (ranAttempt.current === attempt) return;
+    ranAttempt.current = attempt;
     setState({ kind: 'loading' });
     const statsPath = `/api/daily/stats?day=${encodeURIComponent(puzzle.day)}`;
-    const showStats = (res: Awaited<ReturnType<typeof apiGet<DailyStatsView>>>) => {
+    const showStats = (res: DailyResult<DailyStatsView>) => {
       if (res.ok) setState({ kind: 'ready', stats: res.data });
       else if (res.status === 503) setState({ kind: 'unavailable' });
       else setState({ kind: 'error', message: res.error });
     };
     void (async () => {
-      const shouldPost = signedIn && !local.submitted && !local.submitError;
-      if (!shouldPost) {
-        showStats(await apiGet<DailyStatsView>(statsPath, token));
+      if (!signedIn && local.startTicket && !local.solveReceipt) {
+        // Guest: have the server check and stamp the solve now, so signing in
+        // later doesn't add to the time. If this fails, the solve is still
+        // timed from the start ticket when it's posted after sign-in.
+        const r = await dailyRequest<DailyGuestSolveResponse>('POST', '/api/daily/guest-solve', null, {
+          day: puzzle.day,
+          steps: solved.steps,
+          startTicket: local.startTicket,
+        });
+        if (r.ok) onReceipt(r.data.solveReceipt, r.data.timeMs);
+      }
+      if (!signedIn || !token || local.submitted || local.submitError) {
+        showStats(await dailyRequest<DailyStatsView>('GET', statsPath, token));
         return;
       }
-      const res = await apiPost<DailyStatsView>(
-        '/api/daily/solve',
-        { day: puzzle.day, steps: solved.steps, timeMs: solved.timeMs },
-        token,
-      );
+      setSubmitNote(null);
+      const res = await postSolve(puzzle.day, local, token);
       if (res.ok) {
         onSubmitted(res.data.mine?.timeMs);
         setState({ kind: 'ready', stats: res.data });
@@ -453,24 +607,31 @@ function Solved({
       if (res.status === 401) {
         // Session expired: keep everything, ask to sign in again (retries next mount).
         setSubmitNote({ kind: 'auth' });
-      } else if (res.status >= 400 && res.status < 500) {
-        // Definitive refusal: remember it so we don't re-POST on every visit.
+      } else if (isFinalRefusal(res)) {
+        // Retrying can't change this answer: remember it so we don't re-POST on every visit.
         onSubmitError(res.error);
         setSubmitNote({ kind: 'refused', message: res.error });
       } else if (res.status === 503) {
         setState({ kind: 'unavailable' });
         return;
+      } else {
+        // Anything else may pass later (server hiccup, network, too fast): not remembered,
+        // retried on "Try again" or the next visit.
+        setSubmitNote({ kind: 'retry', message: res.error });
       }
-      // 5xx / network errors simply retry on the next mount.
-      showStats(await apiGet<DailyStatsView>(statsPath, token));
+      showStats(await dailyRequest<DailyStatsView>('GET', statsPath, token));
     })();
-  }, [signedIn, local.submitted, local.submitError, puzzle.day, solved, token, onSubmitted, onSubmitError]);
+  }, [attempt, signedIn, local, puzzle.day, solved, token, onSubmitted, onSubmitError, onReceipt]);
 
   const stats = state.kind === 'ready' ? state.stats : null;
   // The server's own number counts this solve; a guest gets an estimate.
   const mineTime = stats?.mine?.timeMs ?? solved.timeMs;
-  const pct = stats ? (stats.mine?.fasterThanPct ?? approxFasterThan(stats, mineTime)) : null;
   const counted = Boolean(stats?.mine);
+  // Null when there is no one to compare with (first solver) or no curve yet.
+  const pct = stats ? (stats.mine ? stats.mine.fasterThanPct : approxFasterThan(stats, mineTime)) : null;
+  // First solver: the server says nobody else is in the pool (this also holds for a test
+  // account, which isn't counted in `solvers`), or, uncounted, nobody has solved at all.
+  const firstSolver = stats ? (stats.mine ? stats.mine.fasterThanPct === null : stats.solvers === 0) : false;
 
   async function copy() {
     try {
@@ -497,7 +658,7 @@ function Solved({
           <p className="text-sm text-muted">The curve isn’t available right now. Your time is saved on this device.</p>
         ) : state.kind === 'error' ? (
           <p className="text-sm text-bad" role="alert">{state.message}</p>
-        ) : stats && stats.solvers <= (counted ? 1 : 0) ? (
+        ) : stats && firstSolver ? (
           <p className="text-sm">You’re the first to solve today’s puzzle.</p>
         ) : stats ? (
           <>
@@ -529,6 +690,14 @@ function Solved({
       )}
       {submitNote?.kind === 'refused' && (
         <p className="text-center text-sm text-bad" role="alert">{submitNote.message}</p>
+      )}
+      {submitNote?.kind === 'retry' && (
+        <div className="flex flex-col gap-2 text-center" role="alert">
+          <p className="text-sm text-bad">Your solve wasn’t saved yet. {submitNote.message}</p>
+          <button type="button" className="btn-secondary h-12" onClick={() => setAttempt((n) => n + 1)}>
+            Try again
+          </button>
+        </div>
       )}
 
       {!signedIn && (
