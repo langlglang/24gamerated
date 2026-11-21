@@ -599,6 +599,11 @@ if (isDatabaseConfigured()) {
 process.on('unhandledRejection', (err) => {
   console.error('[server] unhandled rejection (kept running):', err);
 });
+// Same idea for synchronous throws inside socket/HTTP callbacks. A crashed
+// process drops every live game, which is worse than one failed request.
+process.on('uncaughtException', (err) => {
+  console.error('[server] uncaught exception (kept running):', err);
+});
 
 async function boot(): Promise<void> {
   if (isDatabaseConfigured()) {
