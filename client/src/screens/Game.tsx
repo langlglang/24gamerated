@@ -8,6 +8,7 @@ import {
 import { CombineBoard } from '../components/CombineBoard.js';
 import { CountdownBar } from '../components/Countdown.js';
 import { HandResultOverlay } from '../components/HandResultOverlay.js';
+import { BuzzAlert } from '../components/BuzzAlert.js';
 import { Scoreboard } from '../components/Scoreboard.js';
 
 interface Props {
@@ -231,6 +232,10 @@ export function Game({
         {describeRules(state.rules)} · {state.cardsRemaining} cards left
         {!state.rated && state.series.matchesPlayed > 0 && ` · match ${state.series.matchesPlayed + 1}`}
       </p>
+
+      {someoneElseAnswering && state.activePlayerId && (
+        <BuzzAlert name={activeName} buzzerId={state.activePlayerId} />
+      )}
 
       {state.phase === 'hand-result' && state.lastResult && (
         <HandResultOverlay result={state.lastResult} state={state} selfId={selfId} />
