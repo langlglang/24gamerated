@@ -81,7 +81,7 @@ const STALE = `created_at < now() - make_interval(mins => ${CHALLENGE_EXPIRY_MIN
 export async function createChallenge(
   fromUserId: string,
   toUserId: string,
-): Promise<ChallengeView> {
+): Promise<{ challenge: ChallengeView; created: boolean }> {
   // A stale pending row (not yet swept) would otherwise block a fresh one.
   await query(
     `UPDATE challenges SET status = 'expired', responded_at = now()
@@ -103,7 +103,7 @@ export async function createChallenge(
         [fromUserId, toUserId],
       );
   if (!row) throw new Error('challenge vanished after insert');
-  return toView(row);
+  return { challenge: toView(row), created: inserted !== null };
 }
 
 export async function getChallenge(id: string): Promise<ChallengeView | null> {
