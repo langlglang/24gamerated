@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { isValidRoomCode } from '@24game/shared';
 import { Auth } from './screens/Auth.js';
 import { Daily } from './screens/Daily.js';
 import { ResetPassword } from './screens/ResetPassword.js';
@@ -36,15 +37,18 @@ function clearResetToken(): void {
 import { Game } from './screens/Game.js';
 import { Home } from './screens/Home.js';
 import { Lobby } from './screens/Lobby.js';
+import { NotFound } from './screens/NotFound.js';
 import { Ranked } from './screens/Ranked.js';
 import { Training } from './screens/Training.js';
 import { useAuth } from './useAuth.js';
 import { useGame } from './useGame.js';
 
-type Screen = 'home' | 'auth' | 'ranked' | 'training' | 'daily';
+type RoutedScreen = 'home' | 'auth' | 'ranked' | 'training' | 'daily';
+/** Screens with no address of their own: they keep whatever URL was typed. */
+type Screen = RoutedScreen | 'notFound' | 'roomNotFound';
 
 /** Each screen has its own address, so refresh and the back button work. */
-const PATHS: Record<Screen, string> = {
+const PATHS: Record<RoutedScreen, string> = {
   home: '/',
   auth: '/signin',
   ranked: '/ranked',
@@ -52,18 +56,27 @@ const PATHS: Record<Screen, string> = {
   daily: '/daily',
 };
 
+/** Any /room/... address. Whether the code in it could be real is checked separately. */
+const ROOM_PATH = /^\/room\/([^/]*)\/?$/;
+
+/** The code from a /room/CODE address, if it is a well-formed room code. */
+function roomCodeFromPath(pathname: string): string | null {
+  const raw = ROOM_PATH.exec(pathname)?.[1];
+  if (!raw || !/^[A-Za-z0-9]+$/.test(raw) || !isValidRoomCode(raw)) return null;
+  return raw.toUpperCase();
+}
+
 function screenFromPath(pathname: string): Screen {
+  // A shared room link opens the join form on the home screen.
+  if (ROOM_PATH.test(pathname)) return roomCodeFromPath(pathname) ? 'home' : 'roomNotFound';
   const clean = pathname.replace(/\/+$/, '') || '/';
-  const hit = (Object.keys(PATHS) as Screen[]).find((s) => PATHS[s] === clean);
-  return hit ?? 'home';
+  const hit = (Object.keys(PATHS) as RoutedScreen[]).find((s) => PATHS[s] === clean);
+  return hit ?? 'notFound';
 }
 
 /** A shared /room/CODE link, read once on load. */
-const ROOM_PATH = /^\/room\/([A-Za-z0-9]{4,8})\/?$/;
 const initialRoomCode =
-  typeof window === 'undefined'
-    ? null
-    : (ROOM_PATH.exec(window.location.pathname)?.[1]?.toUpperCase() ?? null);
+  typeof window === 'undefined' ? null : roomCodeFromPath(window.location.pathname);
 
 export default function App() {
   const auth = useAuth();
@@ -73,6 +86,7 @@ export default function App() {
   const [afterAuth, setAfterAuth] = useState<Screen>('ranked');
   const [resetToken, setResetToken] = useState<string | null>(readResetToken);
   const [authView, setAuthView] = useState<'login' | 'forgot'>('login');
+  const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(initialRoomCode);
 
   // The socket is the authority on the player's record once connected, so a
   // rating change mid-session flows straight back into the auth cache.
@@ -87,13 +101,33 @@ export default function App() {
   const roomCode = game.state?.roomCode ?? null;
   useEffect(() => {
     if (resetToken) return;
-    const path = roomCode ? `/room/${roomCode}` : PATHS[screen];
-    if (window.location.pathname === path) return;
+    const path = roomCode
+      ? `/room/${roomCode}`
+      : screen === 'notFound' || screen === 'roomNotFound'
+        ? null // keep the address that was asked for
+        : PATHS[screen];
+    if (path === null || window.location.pathname === path) return;
     // Leaving a /room/ address before the game state has loaded (e.g. on a
     // refresh) replaces it rather than stacking history entries.
     const replace = !roomCode && ROOM_PATH.test(window.location.pathname);
     window.history[replace ? 'replaceState' : 'pushState'](null, '', path);
   }, [screen, roomCode, resetToken]);
+
+  // Dropping out of a room by any route (closed by the server, seat lost on
+  // rejoin) while a not-found screen sits underneath lands on home, not on a
+  // "page not found" that the /room/ URL no longer explains.
+  const hadRoom = useRef(false);
+  useEffect(() => {
+    if (roomCode) {
+      hadRoom.current = true;
+      // The shared link has done its job; coming home later shows the menu,
+      // not a join form for a room we already left.
+      setPendingJoinCode(null);
+    } else if (hadRoom.current) {
+      hadRoom.current = false;
+      setScreen((s) => (s === 'notFound' || s === 'roomNotFound' ? 'home' : s));
+    }
+  }, [roomCode]);
 
   // Back / forward buttons.
   useEffect(() => {
@@ -157,6 +191,17 @@ export default function App() {
 
   const { state } = game;
 
+  /**
+   * Leaving a lobby or match always lands on home in one step. game.leave()
+   * clears the room state, the stored session and any rated result together,
+   * and late server snapshots of the room are ignored, so nothing from the
+   * old room can flash back. The URL effect then swaps /room/CODE for "/".
+   */
+  const leaveRoom = () => {
+    game.leave();
+    setScreen('home');
+  };
+
   return (
     <div className="min-h-full">
       {game.notice && (
@@ -202,7 +247,7 @@ export default function App() {
             onConfigure={game.configure}
             onSetTeam={game.setTeam}
             onStart={game.start}
-            onLeave={game.leave}
+            onLeave={leaveRoom}
           />
         ) : (
           <Game
@@ -215,10 +260,7 @@ export default function App() {
             onCallNoSolution={game.callNoSolution}
             onCombine={game.combine}
             onPlayAgain={game.playAgain}
-            onLeave={() => {
-              game.dismissRatedResult();
-              game.leave();
-            }}
+            onLeave={leaveRoom}
           />
         )
       ) : screen === 'auth' ? (
@@ -237,9 +279,14 @@ export default function App() {
         />
       ) : screen === 'ranked' ? (
         <Ranked game={game} auth={auth} onBack={() => setScreen('home')} />
+      ) : screen === 'notFound' || screen === 'roomNotFound' ? (
+        <NotFound
+          kind={screen === 'roomNotFound' ? 'room' : 'page'}
+          onHome={() => setScreen('home')}
+        />
       ) : (
         <Home
-          initialJoinCode={initialRoomCode}
+          initialJoinCode={pendingJoinCode}
           connected={game.connected}
           user={game.profile ?? auth.user}
           authLoading={auth.loading}

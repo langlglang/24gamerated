@@ -5,7 +5,9 @@ import {
   type PublicGameState,
   type RatedResultView,
 } from '@24game/shared';
+import { useEffect, useState } from 'react';
 import { CombineBoard } from '../components/CombineBoard.js';
+import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { CountdownBar } from '../components/Countdown.js';
 import { HandResultOverlay } from '../components/HandResultOverlay.js';
 import { BuzzAlert } from '../components/BuzzAlert.js';
@@ -37,7 +39,14 @@ export function Game({
   onPlayAgain,
   onLeave,
 }: Props) {
-  const me = state.players.find((p) => p.id === selfId) ?? null;
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
+  // The match ending under an open dialog makes the question moot; don't
+  // let it reappear when the next match starts.
+  const matchOver = state.phase === 'match-result';
+  useEffect(() => {
+    if (matchOver) setConfirmingLeave(false);
+  }, [matchOver]);
+  const me =state.players.find((p) => p.id === selfId) ?? null;
   const isAnswering = state.phase === 'answering' && state.activePlayerId === selfId;
   const someoneElseAnswering = state.phase === 'answering' && state.activePlayerId !== selfId;
   const activeName =
@@ -163,27 +172,53 @@ export function Game({
     );
   }
 
+  // Who we are waiting on while the match is paused (never ourselves: if we
+  // were the one offline we would not be seeing this screen).
+  const missing = state.players.filter((p) => !p.connected && p.id !== selfId);
+  const missingNames =
+    missing.length === 0
+      ? 'a player'
+      : missing.length === 1
+        ? missing[0]!.name
+        : `${missing.length} players`;
+  const opponentName =
+    opponent?.username ?? state.players.find((p) => p.id !== selfId)?.name ?? 'your opponent';
+  const othersAway = state.phase === 'paused' && missing.length > 0;
+
   return (
     <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 px-5 pb-6 pt-3">
-      <header className="flex h-11 items-center justify-between border-b border-ink text-sm">
-        <span className="w-24 truncate font-semibold">
-          {state.rated ? (
-            <>{state.rated === 'ranked' ? 'Ranked' : 'Challenge'}</>
-          ) : (
-            <span className="tracking-widest">{state.roomCode}</span>
-          )}
+      {/* Above the hand-result overlay, so Leave is reachable at every moment. */}
+      <header className="relative z-30 flex h-11 items-center justify-between border-b border-ink bg-paper text-sm">
+        <span className="w-28">
+          <button
+            type="button"
+            className="-ml-3 flex h-11 min-w-[44px] items-center gap-1.5 px-3 font-semibold"
+            onClick={() => setConfirmingLeave(true)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+            Leave
+          </button>
         </span>
         <span className="font-display text-xl font-extrabold">24</span>
-        <span className="w-24 text-right font-semibold tabular-nums">
+        <span className="w-28 text-right font-semibold tabular-nums">
           {state.isTiebreak ? 'Sudden death' : `${state.handNumber}/${state.totalHands}`}
         </span>
       </header>
 
-      {opponent && state.rated && (
-        <p className="-mb-2 text-center text-xs text-muted">
-          vs {opponent.username} · {opponent.rating}
-        </p>
-      )}
+      <p className="-mb-2 text-center text-xs text-muted">
+        {state.rated ? (
+          <>
+            {state.rated === 'ranked' ? 'Ranked' : 'Rated challenge'}
+            {opponent && ` · vs ${opponent.username} · ${opponent.rating}`}
+          </>
+        ) : (
+          <>
+            Room <span className="font-semibold tracking-widest text-ink">{state.roomCode}</span>
+          </>
+        )}
+      </p>
 
       <Scoreboard state={state} selfId={selfId} />
 
@@ -193,13 +228,29 @@ export function Game({
 
       <div className="flex flex-1 flex-col justify-center gap-4">
         <p className="text-center font-display text-2xl font-semibold" aria-live="polite">
-          {state.phase === 'paused' && 'Waiting for a player to reconnect…'}
+          {state.phase === 'paused' && `Waiting for ${missingNames} to reconnect…`}
           {someoneElseAnswering && `${activeName} buzzed in…`}
           {isAnswering && 'Your turn. Make 24.'}
           {state.phase === 'open' && me?.lockedOut && 'You’re out this hand.'}
           {state.phase === 'open' && !me?.lockedOut && 'Make 24.'}
           {state.phase === 'hand-result' && 'Make 24.'}
         </p>
+        {othersAway && (
+          <div className="flex flex-col items-center gap-3 text-center">
+            <p className="max-w-[20rem] text-sm text-muted">
+              {state.rated
+                ? 'If they’re not back within a minute, the match is cancelled. Nobody’s rating changes.'
+                : 'If they’re not back within a minute, the room closes.'}
+            </p>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setConfirmingLeave(true)}
+            >
+              {state.rated ? 'Leave match' : 'Leave game'}
+            </button>
+          </div>
+        )}
         <CombineBoard
           dealt={state.cards}
           table={state.table}
@@ -240,6 +291,53 @@ export function Game({
       {state.phase === 'hand-result' && state.lastResult && (
         <HandResultOverlay result={state.lastResult} state={state} selfId={selfId} />
       )}
+
+      {/*
+        Copy below mirrors what the server's room:leave actually does mid-match:
+        our seat goes offline, the room pauses, and if nobody is back within
+        RECONNECT_GRACE_MS (60 s) the room closes. A rated match that closes
+        this way is never recorded, so nobody's rating moves. The stored
+        session is wiped on leave, so there is no way back into the seat.
+      */}
+      <ConfirmDialog
+        open={confirmingLeave}
+        title={
+          state.rated
+            ? `Leave this ${state.rated === 'ranked' ? 'ranked match' : 'rated challenge'}?`
+            : 'Leave this game?'
+        }
+        confirmLabel={state.rated ? 'Leave match' : 'Leave game'}
+        cancelLabel={othersAway ? 'Keep waiting' : 'Keep playing'}
+        onCancel={() => setConfirmingLeave(false)}
+        onConfirm={() => {
+          setConfirmingLeave(false);
+          onLeave();
+        }}
+      >
+        {state.rated ? (
+          othersAway ? (
+            <p>
+              {opponentName} has dropped. If you leave, the match is cancelled within a minute
+              with no result. Neither rating changes.
+            </p>
+          ) : (
+            <>
+              <p>
+                You can’t come back to this match. It pauses for {opponentName}, then is
+                cancelled after 60 seconds with no result. Neither rating changes.
+              </p>
+              <p>You can’t join the ranked queue again until it’s cancelled.</p>
+            </>
+          )
+        ) : othersAway ? (
+          <p>You can’t rejoin this game. The room closes within a minute for everyone.</p>
+        ) : (
+          <p>
+            You can’t rejoin this game. It pauses for everyone else, and the room closes for
+            everyone after 60 seconds.
+          </p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }
