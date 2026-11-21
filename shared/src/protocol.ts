@@ -118,14 +118,34 @@ export type ActionRejection =
   | 'player-offline'
   | 'invalid-combine';
 
+/**
+ * A successful create or join. `playerId` is public (it is in every state
+ * broadcast); `reconnectToken` is a secret only this seat's owner receives.
+ * Keep both, and send both back in `room:join` to reclaim the seat after a
+ * refresh or a dropped connection.
+ */
+export interface SeatGrant {
+  readonly ok: true;
+  readonly roomCode: string;
+  readonly playerId: string;
+  readonly reconnectToken: string;
+}
+
 export interface ClientToServerEvents {
+  /** Creating a room while seated elsewhere leaves the old seat first. */
   'room:create': (
     payload: { name: string; mode: GameMode; rules: RuleSet },
-    ack: (res: { ok: true; roomCode: string; playerId: string } | { ok: false; error: ActionRejection }) => void,
+    ack: (res: SeatGrant | { ok: false; error: ActionRejection }) => void,
   ) => void;
+  /**
+   * Without `playerId` this takes a new seat (the server picks its id). With
+   * `playerId` it reclaims that seat, which needs the seat's `reconnectToken`
+   * (guest rooms) or a socket signed in as that user (rated rooms). Joining
+   * while seated elsewhere leaves the old seat first.
+   */
   'room:join': (
-    payload: { name: string; roomCode: string; playerId?: string },
-    ack: (res: { ok: true; roomCode: string; playerId: string } | { ok: false; error: ActionRejection }) => void,
+    payload: { name: string; roomCode: string; playerId?: string; reconnectToken?: string },
+    ack: (res: SeatGrant | { ok: false; error: ActionRejection }) => void,
   ) => void;
   'room:configure': (payload: { mode?: GameMode; rules?: RuleSet }) => void;
   'room:setTeam': (payload: { playerId: string; team: TeamId }) => void;
@@ -165,6 +185,14 @@ export interface ServerToClientEvents {
   /** An illegal combine attempt — client flashes the error, clock keeps running. */
   combineRejected: (payload: { error: ValidationError }) => void;
   roomClosed: (payload: { reason: string }) => void;
+  /**
+   * This socket's seat was reclaimed by another connection holding the same
+   * seat credentials (normally the same player in a newer tab). The room is
+   * still running; only this socket has been detached from it. Clear the
+   * in-memory game state, but NOT the stored session: storage is shared with
+   * the tab that now owns the seat.
+   */
+  seatReplaced: (payload: { roomCode: string }) => void;
 
   // ---- rated play ----
 
@@ -176,10 +204,19 @@ export interface ServerToClientEvents {
     roomCode: string;
     /** Your seat in the room. Rated seats use your user id. */
     playerId: string;
+    /**
+     * The seat's reconnect secret, as for guest seats. Rated seats are
+     * reclaimed by the signed-in owner (the token is not required there),
+     * but it is issued so clients can store every seat the same way.
+     */
+    reconnectToken: string;
     kind: RatedKind;
     opponent: { username: string; rating: number };
   }) => void;
-  /** Rating movement, sent once the match has been recorded. */
+  /**
+   * Rating movement, sent once the match has been recorded, and again to a
+   * player who rejoins the finished rated room (e.g. after a refresh).
+   */
   ratedResult: (result: RatedResultView) => void;
   challengeIncoming: (challenge: ChallengeView) => void;
   challengeUpdated: (challenge: ChallengeView) => void;
