@@ -214,9 +214,12 @@ async function main() {
   check('the stored rating matches the result', me.body.user?.rating === aliceResult.you.after);
   check('the rated game counter incremented', me.body.user?.ratedGames === 1);
 
+  // Smoke accounts use @example.test, which the public leaderboard hides, so a
+  // test run never shows up there even if it is pointed at a real database.
   const board = await api('/api/leaderboard');
   const listed = board.body.entries?.some((e) => e.username === alice.username);
-  check('the player appears on the leaderboard', listed === true);
+  check('the leaderboard answers', Array.isArray(board.body.entries));
+  check('test accounts are hidden from the leaderboard', listed === false);
 
   aliceSocket.close();
   bobSocket.close();
