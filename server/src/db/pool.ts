@@ -10,6 +10,11 @@ export const isDatabaseConfigured = (): boolean => (process.env.DATABASE_URL ?? 
 
 let pool: pg.Pool | null = null;
 
+function poolMax(): number {
+  const n = Number(process.env.DB_POOL_MAX);
+  return Number.isInteger(n) && n >= 1 && n <= 100 ? n : 5;
+}
+
 export function getPool(): pg.Pool {
   const url = (process.env.DATABASE_URL ?? '').trim();
   if (!url) {
@@ -22,9 +27,14 @@ export function getPool(): pg.Pool {
     pool = new pg.Pool({
       connectionString: url,
       ssl: needsSsl ? { rejectUnauthorized: true } : undefined,
-      max: 5,
+      // 5 suits a free Neon database (direct connections are scarce). With a
+      // paid plan, or Neon's pooled "-pooler" host in DATABASE_URL, raise it
+      // with DB_POOL_MAX.
+      max: poolMax(),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
+      // Hosted Postgres drops idle TCP connections; keepalives notice sooner.
+      keepAlive: true,
     });
     pool.on('error', (err) => {
       console.error('[db] idle client error:', err.message);

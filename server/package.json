@@ -10,11 +10,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "migrate": "node dist/db/migrate-cli.js",
-    "start": "node dist/index.js",
-    "test": "vitest run"
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@24game/shared": "*",
+    "@sentry/node": "^11.16.0",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

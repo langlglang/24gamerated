@@ -1,4 +1,5 @@
 import './env.js';
+import { flushMonitoring, reportClientError, reportError } from './monitoring.js';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -22,7 +23,7 @@ import { createDailyRouter, warmDailyPuzzles } from './daily/routes.js';
 import { tokenMatchesPassword, verifyToken } from './auth/tokens.js';
 import { appUrl, isMailConfigured } from './auth/mailer.js';
 import { pruneExpiredResets } from './db/resets.js';
-import { isDatabaseConfigured, pingDatabase } from './db/pool.js';
+import { closePool, isDatabaseConfigured, pingDatabase } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import { findById, findByUsername, toPublicUser, touchLastSeen } from './db/users.js';
 import { MissingPlayerError, recordRatedMatch } from './db/matches.js';
@@ -337,8 +338,11 @@ type RatedGuard =
   | { ok: true; userId: string; username: string }
   | { ok: false; error: RatedRejection };
 
+/** Set when the host asks us to stop (a deploy); no new games start after this. */
+let shuttingDown = false;
+
 function ratedGuard(socketId: string): RatedGuard {
-  if (!isDatabaseConfigured()) return { ok: false, error: 'accounts-unavailable' };
+  if (!isDatabaseConfigured() || shuttingDown) return { ok: false, error: 'accounts-unavailable' };
   const session = sessionOf(socketId);
   if (!session.userId || !session.username) return { ok: false, error: 'not-signed-in' };
   return { ok: true, userId: session.userId, username: session.username };
@@ -457,7 +461,7 @@ io.on('connection', (socket) => {
   socket.on('room:create', ({ name, mode, rules }, ack) => {
     // 'wrong-phase' reads "not available right now" on the client; a
     // dedicated code would need a client release first.
-    if (!createsPerSocket.hit(socket.id) || !createsPerIp.hit(ip)) {
+    if (shuttingDown || !createsPerSocket.hit(socket.id) || !createsPerIp.hit(ip)) {
       ack({ ok: false, error: 'wrong-phase' });
       return;
     }
@@ -482,7 +486,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('room:join', ({ name, roomCode, playerId, reconnectToken }, ack) => {
-    if (failedJoinsPerSocket.blocked(socket.id) || failedJoinsPerIp.blocked(ip)) {
+    if (shuttingDown || failedJoinsPerSocket.blocked(socket.id) || failedJoinsPerIp.blocked(ip)) {
       ack({ ok: false, error: 'wrong-phase' });
       return;
     }
@@ -928,6 +932,28 @@ app.use((_req, res, next) => {
 
 app.use('/api', createAuthRouter());
 app.use('/api', createDailyRouter());
+
+// Crash reports from players' browsers. Forwarded to Sentry when it is on,
+// otherwise just logged. Small, string-only, and rate limited per IP so it
+// can't be used to flood the logs.
+const clientErrorsPerIp = new SlidingWindowLimiter(20, 60_000);
+app.post('/api/client-error', express.json({ limit: '8kb' }), (req, res) => {
+  if (!clientErrorsPerIp.hit(req.ip ?? 'unknown')) {
+    res.status(429).json({ error: 'Too many reports' });
+    return;
+  }
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : undefined);
+  const message = str(b['message'], 500);
+  if (!message) {
+    res.status(400).json({ error: 'Bad request' });
+    return;
+  }
+  const report = { message, stack: str(b['stack'], 4000), url: str(b['url'], 300), ua: str(b['ua'], 300) };
+  console.warn('[client-error]', report.message, report.url ?? '');
+  reportClientError(report);
+  res.status(204).end();
+});
 // Unknown API routes and wrong methods answer in JSON like the rest of the API.
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -991,7 +1017,10 @@ app.use((err: unknown, _req: express.Request, res: express.Response, next: expre
   else if (status === 415) error = 'Unsupported content encoding';
   else if (status < 500) error = 'Bad request';
   else error = 'Server error';
-  if (status >= 500) console.error('[http] request failed:', err);
+  if (status >= 500) {
+    console.error('[http] request failed:', err);
+    reportError(err, { where: 'http' });
+  }
   res.status(status).json({ error });
 });
 
@@ -1012,12 +1041,44 @@ if (isDatabaseConfigured()) {
 // the whole game down for everyone, so log it and keep serving.
 process.on('unhandledRejection', (err) => {
   console.error('[server] unhandled rejection (kept running):', err);
+  reportError(err, { where: 'unhandledRejection' });
 });
 // Same idea for synchronous throws inside socket/HTTP callbacks. A crashed
 // process drops every live game, which is worse than one failed request.
 process.on('uncaughtException', (err) => {
   console.error('[server] uncaught exception (kept running):', err);
+  reportError(err, { where: 'uncaughtException' });
 });
+
+/**
+ * Graceful stop. Render (like most hosts) sends SIGTERM before replacing the
+ * process on a deploy and waits ~30 s. Rooms live in memory and can't move to
+ * the new process, so: tell everyone what's happening, refuse new games, stop
+ * accepting connections, close the database pool, and exit. Matches cut short
+ * this way are not recorded, so nobody is charged a forfeit for a restart.
+ */
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[server] ${signal} received — shutting down gracefully`);
+  io.emit('serverNotice', {
+    message: 'The game is updating. Games in progress will end without a result. Back in a moment.',
+  });
+  // Give the notice a moment to reach clients before sockets close.
+  setTimeout(() => {
+    io.close();
+    httpServer.close(() => {
+      void closePool()
+        .catch((err) => console.error('[db] pool close failed:', err))
+        .then(() => flushMonitoring())
+        .finally(() => process.exit(0));
+    });
+  }, 2_000).unref();
+  // Hard stop if something keeps the server open.
+  setTimeout(() => process.exit(0), 15_000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 async function boot(): Promise<void> {
   if (isDatabaseConfigured()) {
