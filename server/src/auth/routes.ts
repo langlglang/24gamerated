@@ -15,10 +15,12 @@ import {
 import { matchHistory } from '../db/matches.js';
 import {
   hashPassword,
+  readStringFields,
   validateEmail,
+  validateLoginIdentifier,
   validatePassword,
   validateUsername,
-  verifyPassword,
+  verifyPasswordConstantTime,
 } from './credentials.js';
 import { bearerFrom, issueToken, tokenMatchesPassword, verifyToken } from './tokens.js';
 import { appUrl, sendMail } from './mailer.js';
@@ -126,14 +128,38 @@ function clearThrottle(key: string): void {
   attempts.delete(key);
 }
 
+/** Password-reset requests: per sender IP, and per target address. */
+const FORGOT_WINDOW_MS = 60 * 60_000;
+const FORGOT_PER_IP = 10;
+const FORGOT_PER_EMAIL = 5;
+
+/**
+ * Read the named string fields from the JSON body, or answer 400 and return
+ * null when one of them is a number, array, object, etc.
+ */
+function stringFields<K extends string>(
+  req: Request,
+  res: Response,
+  keys: readonly K[],
+): Record<K, string> | null {
+  const parsed = readStringFields(req.body, keys);
+  if (!parsed.ok) {
+    res.status(400).json({ error: 'That request was not formatted correctly.', field: parsed.field });
+    return null;
+  }
+  return parsed.values;
+}
+
 export function createAuthRouter(): express.Router {
   const router = express.Router();
   router.use(express.json({ limit: '16kb' }));
 
   router.post('/auth/register', requireDatabase, async (req, res) => {
-    const email = String(req.body?.email ?? '').trim();
-    const username = String(req.body?.username ?? '').trim();
-    const password = String(req.body?.password ?? '');
+    const fields = stringFields(req, res, ['email', 'username', 'password'] as const);
+    if (!fields) return;
+    const email = fields.email.trim();
+    const username = fields.username.trim();
+    const password = fields.password;
 
     const issue = validateEmail(email) ?? validateUsername(username) ?? validatePassword(password);
     if (issue) {
@@ -161,11 +187,19 @@ export function createAuthRouter(): express.Router {
   });
 
   router.post('/auth/login', requireDatabase, async (req, res) => {
-    const identifier = String(req.body?.identifier ?? '').trim();
-    const password = String(req.body?.password ?? '');
+    const fields = stringFields(req, res, ['identifier', 'password'] as const);
+    if (!fields) return;
+    const identifier = fields.identifier.trim();
+    const password = fields.password;
 
     if (!identifier || !password) {
       res.status(400).json({ error: 'Enter your email or username and password.' });
+      return;
+    }
+    // Before the throttle and the lookup: a NUL byte would make Postgres throw.
+    const identifierIssue = validateLoginIdentifier(identifier);
+    if (identifierIssue) {
+      res.status(400).json({ error: identifierIssue });
       return;
     }
 
@@ -182,7 +216,9 @@ export function createAuthRouter(): express.Router {
         : await findByUsername(identifier);
 
       // Same message either way, so this cannot be used to enumerate accounts.
-      const ok = user ? await verifyPassword(password, user.password_hash) : false;
+      // An unknown account still pays for one bcrypt comparison (against a
+      // dummy hash), so response time does not give it away either.
+      const ok = await verifyPasswordConstantTime(password, user?.password_hash);
       if (!user || !ok) {
         res.status(401).json({ error: 'Wrong email/username or password.' });
         return;
@@ -200,18 +236,31 @@ export function createAuthRouter(): express.Router {
   // Always answers the same way whether or not the email has an account, so
   // this cannot be used to find out who is registered.
   router.post('/auth/forgot', requireDatabase, async (req, res) => {
-    const email = String(req.body?.email ?? '').trim();
+    const fields = stringFields(req, res, ['email'] as const);
+    if (!fields) return;
+    const email = fields.email.trim();
     const issue = validateEmail(email);
     if (issue) {
       res.status(400).json({ error: issue.message, field: 'email' });
       return;
     }
-    // Per sender (needs 'trust proxy' so req.ip is the player, not Render's
-    // proxy) and a tighter per-address cap so no inbox can be flooded.
-    const perIp = throttled(`forgot-ip:${req.ip ?? 'unknown'}`, 10, 60 * 60_000);
-    const perEmail = throttled(`forgot-email:${email.toLowerCase()}`, 3, 60 * 60_000);
-    if (perIp || perEmail) {
+    // Per sender first (needs 'trust proxy' so req.ip is the player, not
+    // Render's proxy). Only a request that passes it counts against the
+    // address, so a sender who is already blocked cannot burn someone else's
+    // quota. The per-address cap stops any inbox being flooded. A distributed
+    // sender can still use up an address's quota for the hour, but every
+    // request it makes mails a working link to the real owner, and the newest
+    // one stays valid for 30 minutes, so that is a nuisance rather than a
+    // takeover. 5 an hour leaves the owner some retries without letting anyone
+    // send more than a handful of emails.
+    const tooMany = () =>
       res.status(429).json({ error: 'Too many requests. Wait a while and try again.' });
+    if (throttled(`forgot-ip:${req.ip ?? 'unknown'}`, FORGOT_PER_IP, FORGOT_WINDOW_MS)) {
+      tooMany();
+      return;
+    }
+    if (throttled(`forgot-email:${email.toLowerCase()}`, FORGOT_PER_EMAIL, FORGOT_WINDOW_MS)) {
+      tooMany();
       return;
     }
 
@@ -234,8 +283,9 @@ export function createAuthRouter(): express.Router {
   });
 
   router.post('/auth/reset', requireDatabase, async (req, res) => {
-    const token = String(req.body?.token ?? '');
-    const password = String(req.body?.password ?? '');
+    const fields = stringFields(req, res, ['token', 'password'] as const);
+    if (!fields) return;
+    const { token, password } = fields;
     if (!token) {
       res.status(400).json({ error: 'This reset link is incomplete. Request a new one.' });
       return;

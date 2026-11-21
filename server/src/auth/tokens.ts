@@ -12,6 +12,8 @@ import jwt from 'jsonwebtoken';
  */
 const TOKEN_TTL = '30d';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 let cachedSecret: string | null = null;
 
 function secret(): string {
@@ -65,7 +67,8 @@ export function verifyToken(token: string | undefined | null): SessionClaims | n
   if (!token) return null;
   try {
     const payload = jwt.verify(token, secret());
-    if (typeof payload === 'string' || !payload.sub) return null;
+    // User ids are UUIDs; anything else would make the users lookup throw.
+    if (typeof payload === 'string' || !payload.sub || !UUID_PATTERN.test(payload.sub)) return null;
     const pwv = (payload as { pwv?: unknown }).pwv;
     return {
       userId: String(payload.sub),

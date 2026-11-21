@@ -280,14 +280,23 @@ handshake via `auth.token`, so both transports agree on who you are. The tradeof
 revoked before it expires. Fine for a game leaderboard; anything touching payments would want
 server-side sessions.
 
-**Passwords** are bcrypt at cost 10. Login failures return one message whether the account exists or
-not, so the endpoint cannot be used to enumerate accounts, and repeated failures are throttled per
-IP + identifier.
+**Passwords** are bcrypt at cost 10, from 8 characters up to 72 **bytes** of UTF-8. bcrypt ignores
+everything past byte 72, so a longer new password is refused rather than silently cut short (72
+plain characters, fewer with accents or emoji). Accounts created before the limit still sign in with
+their full password. Login failures return one message whether the account exists or not, and an
+unknown account is still checked against a dummy bcrypt hash of the same cost, so neither the reply
+nor its timing can be used to enumerate accounts. Repeated failures are throttled per IP +
+identifier. The auth endpoints accept only JSON strings in their fields (an array or object gets a
+400 instead of being coerced), and an email or login name containing control characters is
+rejected before it reaches the database.
 
 **Password resets** follow the same rule: `POST /api/auth/forgot` answers identically whether or not
 the email has an account, and replies *before* the lookup and the email send, so response time
-cannot give it away either. It is throttled per IP (10 an hour) and per address (3 an hour); the
-server sets `trust proxy` so the IP is the player's, not Render's proxy. Requesting a new link
+cannot give it away either. It is throttled per IP (10 an hour), then per address (5 an hour).
+A request already blocked per IP does not count against the address, so a blocked sender cannot use
+up someone else's quota. A sender with many IPs can still exhaust one address's hourly quota, but
+each of its requests mails the real owner a working link (the newest stays valid for 30 minutes), so
+that is a nuisance, not a takeover. The server sets `trust proxy` so the IP is the player's, not Render's proxy. Requesting a new link
 cancels earlier ones. Tokens are 32 random bytes; only their
 SHA-256 is stored (`password_resets`, migration `003_password_resets`, applied on boot), so a
 database leak yields no working links. A token expires after 30 minutes, is spent by
@@ -350,7 +359,7 @@ the gap is invisible to players — check the logs after setting it up.
 ## Testing
 
 ```bash
-npm test                        # 72 unit tests
+npm test                        # unit tests (shared + server)
 npm run build && npm start      # terminal 1
 npm run smoke                   # terminal 2 — guest play
 node scripts/smoke-rated.mjs    # terminal 2 — rated play (needs DATABASE_URL)
@@ -366,7 +375,10 @@ Unit tests cover exact rational arithmetic, the solver under **all four rule com
 validator's rejection paths (division by zero, non-integer with fractions OFF, negative with
 negatives OFF, reused card, unknown card, wrong step count, complete-but-not-24), every 3-player
 scoring edge case including the 0.5/0.5 split, and Elo — symmetry, zero-sum exchange, K-factor
-tiers, the rating floor, order independence, and that a long series stays bounded.
+tiers, the rating floor, order independence, and that a long series stays bounded. Server tests
+cover account input validation (the 72-byte password limit, control characters, non-string JSON
+fields), the dummy-hash login check, token subject validation, the test-account email matcher, and
+tied leaderboard ranks.
 
 **`npm run smoke`** drives two socket clients through create → join → start → buzz → solve, and
 asserts the round locks to the buzzer, a second buzz is refused, the score moves, and the solver
@@ -378,8 +390,9 @@ duplicate usernames rejected, wrong passwords rejected, match history requires a
 challenge reaches the target and starts a match, the matchmaker pairs two queued players, a full
 13-hand ranked match runs, and the resulting Elo change is non-zero, zero-sum, correctly signed, and
 written through to `/api/auth/me`, match history, and the leaderboard. It leaves its test accounts
-behind on purpose. They use `@example.test` emails, which the public leaderboard filters out — a
-safety net, not a reason to aim it at production.
+behind on purpose. They use `@example.test` emails. The public leaderboard hides any address at
+`example.test` or a subdomain of it, with or without a trailing dot. That is a safety net, not a
+reason to aim it at production.
 
 ---
 
