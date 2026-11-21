@@ -94,9 +94,10 @@ ratings held *before* the match, so order of processing cannot change the outcom
 
 ### Rated matches use one fixed ruleset
 
-Rated play is always **fractions ON, negatives ON**. Ratings earned under easier and harder rulesets
-are not the same skill, so a single pool keeps the number meaningful. Guest rooms keep the full rule
-toggles.
+Rated play is always **fractions OFF, negatives OFF**. Ratings earned under easier and harder
+rulesets are not the same skill, so a single pool keeps the number meaningful. Guest rooms and
+practice start with both OFF too, and the toggles turn them on. The Daily 24 is the exception: it
+always plays with both ON.
 
 ### A rated match is one match
 

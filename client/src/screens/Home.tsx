@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  DEFAULT_RULES,
   MAX_FFA_PLAYERS,
   dailyKey,
   dailyNumber,
@@ -10,6 +11,8 @@ import {
 import { RuleToggles } from '../components/RuleToggles.js';
 
 interface Props {
+  /** From a shared /room/CODE link: open the join form with the code filled in. */
+  initialJoinCode?: string | null;
   onCreate: (name: string, mode: GameMode, rules: RuleSet) => Promise<string | null>;
   onJoin: (name: string, code: string) => Promise<string | null>;
   onTraining: () => void;
@@ -30,6 +33,7 @@ const MODES: { id: GameMode; label: string; blurb: string }[] = [
 ];
 
 export function Home({
+  initialJoinCode,
   onCreate,
   onJoin,
   onTraining,
@@ -39,11 +43,11 @@ export function Home({
   user,
   authLoading,
 }: Props) {
-  const [view, setView] = useState<'menu' | 'create' | 'join'>('menu');
+  const [view, setView] = useState<'menu' | 'create' | 'join'>(initialJoinCode ? 'join' : 'menu');
   const [name, setName] = useState(user?.username ?? '');
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(initialJoinCode ?? '');
   const [mode, setMode] = useState<GameMode>('ffa');
-  const [rules, setRules] = useState<RuleSet>({ fractions: true, negatives: true });
+  const [rules, setRules] = useState<RuleSet>(DEFAULT_RULES);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 

@@ -5,7 +5,7 @@ import type { RuleSet } from './types.js';
  * pool. Ratings earned under different rules are not the same skill, so
  * allowing per-room rules would make the number meaningless.
  */
-export const RATED_RULES: RuleSet = { fractions: true, negatives: true };
+export const RATED_RULES: RuleSet = { fractions: false, negatives: false };
 
 /** How rated seats get filled. */
 export type RatedKind = 'ranked' | 'challenge';

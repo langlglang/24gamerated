@@ -174,6 +174,8 @@ export interface ServerToClientEvents {
   /** Matchmaker or an accepted challenge produced a game; the client joins it. */
   ratedMatchFound: (payload: {
     roomCode: string;
+    /** Your seat in the room. Rated seats use your user id. */
+    playerId: string;
     kind: RatedKind;
     opponent: { username: string; rating: number };
   }) => void;

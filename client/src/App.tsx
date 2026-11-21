@@ -43,10 +43,32 @@ import { useGame } from './useGame.js';
 
 type Screen = 'home' | 'auth' | 'ranked' | 'training' | 'daily';
 
+/** Each screen has its own address, so refresh and the back button work. */
+const PATHS: Record<Screen, string> = {
+  home: '/',
+  auth: '/signin',
+  ranked: '/ranked',
+  training: '/practice',
+  daily: '/daily',
+};
+
+function screenFromPath(pathname: string): Screen {
+  const clean = pathname.replace(/\/+$/, '') || '/';
+  const hit = (Object.keys(PATHS) as Screen[]).find((s) => PATHS[s] === clean);
+  return hit ?? 'home';
+}
+
+/** A shared /room/CODE link, read once on load. */
+const ROOM_PATH = /^\/room\/([A-Za-z0-9]{4,8})\/?$/;
+const initialRoomCode =
+  typeof window === 'undefined'
+    ? null
+    : (ROOM_PATH.exec(window.location.pathname)?.[1]?.toUpperCase() ?? null);
+
 export default function App() {
   const auth = useAuth();
   const game = useGame(auth.token);
-  const [screen, setScreen] = useState<Screen>('home');
+  const [screen, setScreen] = useState<Screen>(() => screenFromPath(window.location.pathname));
   /** Where to land after signing in. */
   const [afterAuth, setAfterAuth] = useState<Screen>('ranked');
   const [resetToken, setResetToken] = useState<string | null>(readResetToken);
@@ -59,6 +81,34 @@ export default function App() {
   useEffect(() => {
     if (profile) setUser(profile);
   }, [profile, setUser]);
+
+  // Keep the address bar in step with what's on screen. In a room or match
+  // the URL is /room/CODE; elsewhere it's the screen's own path.
+  const roomCode = game.state?.roomCode ?? null;
+  useEffect(() => {
+    if (resetToken) return;
+    const path = roomCode ? `/room/${roomCode}` : PATHS[screen];
+    if (window.location.pathname === path) return;
+    // Leaving a /room/ address before the game state has loaded (e.g. on a
+    // refresh) replaces it rather than stacking history entries.
+    const replace = !roomCode && ROOM_PATH.test(window.location.pathname);
+    window.history[replace ? 'replaceState' : 'pushState'](null, '', path);
+  }, [screen, roomCode, resetToken]);
+
+  // Back / forward buttons.
+  useEffect(() => {
+    const onPop = () => setScreen(screenFromPath(window.location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // Opening /ranked while signed out goes to sign-in, then back to ranked.
+  useEffect(() => {
+    if (screen === 'ranked' && !auth.loading && !auth.user) {
+      setAfterAuth('ranked');
+      setScreen('auth');
+    }
+  }, [screen, auth.loading, auth.user]);
 
   // A found match takes over the screen; nobody wants to still be looking at
   // the queue while their opponent is already buzzing.
@@ -91,7 +141,7 @@ export default function App() {
       />
     );
   }
-  if (screen === 'training') return <Training onExit={() => setScreen('home')} />;
+  if (screen === 'training' && !game.state) return <Training onExit={() => setScreen('home')} />;
   if (screen === 'daily' && !game.state) {
     return (
       <Daily
@@ -189,6 +239,7 @@ export default function App() {
         <Ranked game={game} auth={auth} onBack={() => setScreen('home')} />
       ) : (
         <Home
+          initialJoinCode={initialRoomCode}
           connected={game.connected}
           user={game.profile ?? auth.user}
           authLoading={auth.loading}

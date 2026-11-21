@@ -177,6 +177,7 @@ function startRatedMatch(
     void socket.join(room.code);
     socket.emit('ratedMatchFound', {
       roomCode: room.code,
+      playerId: self.userId,
       kind,
       opponent: { username: other.username, rating: other.rating },
     });
@@ -287,6 +288,12 @@ io.on('connection', (socket) => {
     const room = manager.get(code);
     if (!room) {
       ack({ ok: false, error: 'room-not-found' });
+      return;
+    }
+    // Rated seats are keyed by user id, which is public (leaderboards), so
+    // only the signed-in owner of that seat may reclaim it after a refresh.
+    if (room.rated && (!playerId || sessionOf(socket.id).userId !== playerId)) {
+      ack({ ok: false, error: 'not-in-room' });
       return;
     }
     const trimmed = name.trim().slice(0, 20) || 'Player';

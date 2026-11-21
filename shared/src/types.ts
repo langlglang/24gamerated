@@ -23,7 +23,7 @@ export interface RuleSet {
   readonly negatives: boolean;
 }
 
-export const DEFAULT_RULES: RuleSet = { fractions: true, negatives: true };
+export const DEFAULT_RULES: RuleSet = { fractions: false, negatives: false };
 
 /** All four combinations, handy for exhaustive tests. */
 export const ALL_RULE_SETS: readonly RuleSet[] = [
