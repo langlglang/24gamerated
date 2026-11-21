@@ -7,11 +7,13 @@ import {
   previousDailyKey,
   scoreDaily,
   type DailyFriendView,
+  type DailyLeaderboardView,
   type DailyResultView,
   type DailyTodayView,
 } from '@24game/shared';
 import { requireAuth, requireDatabase, type AuthedRequest } from '../auth/routes.js';
 import {
+  dailyLeaderboard,
   follow,
   friendsDaily,
   getDailyResult,
@@ -64,6 +66,30 @@ export function createDailyRouter(): express.Router {
     } catch (err) {
       console.error('[daily] today failed:', err);
       res.status(500).json({ error: 'Could not load today’s daily.' });
+    }
+  });
+
+  // Public: anyone can see today's board, signed in or not.
+  router.get('/daily/leaderboard', requireDatabase, async (_req, res) => {
+    const day = dailyKey();
+    try {
+      const { rows, players } = await dailyLeaderboard(day, 20);
+      const view: DailyLeaderboardView = {
+        day,
+        number: dailyNumber(day),
+        players,
+        entries: rows.map((r, i) => ({
+          rank: i + 1,
+          userId: r.user_id,
+          username: r.username,
+          correct: r.correct,
+          timeMs: r.time_ms,
+        })),
+      };
+      res.json(view);
+    } catch (err) {
+      console.error('[daily] leaderboard failed:', err);
+      res.status(500).json({ error: 'Could not load today’s leaderboard.' });
     }
   });
 

@@ -227,9 +227,13 @@ export function Ranked({ game, auth, onBack }: Props) {
         </div>
       )}
 
-      {leaders.length > 0 && (
-        <div className="panel">
-          <p className="mb-2 text-sm font-semibold text-ink">Leaderboard</p>
+      <div className="panel">
+        <p className="mb-2 text-sm font-semibold text-ink">Leaderboard</p>
+        {leaders.length === 0 ? (
+          <p className="text-sm text-muted">
+            No rated games yet. Win a ranked match or a friend challenge to take the top spot.
+          </p>
+        ) : (
           <ul className="space-y-1 text-sm">
             {leaders.map((entry) => (
               <li
@@ -247,8 +251,8 @@ export function Ranked({ game, auth, onBack }: Props) {
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

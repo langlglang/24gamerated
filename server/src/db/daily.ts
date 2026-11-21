@@ -84,3 +84,39 @@ export async function follow(followerId: string, followeeId: string): Promise<bo
 export async function unfollow(followerId: string, followeeId: string): Promise<void> {
   await query(`DELETE FROM follows WHERE follower = $1 AND followee = $2`, [followerId, followeeId]);
 }
+
+export interface DailyLeaderboardRow {
+  user_id: string;
+  username: string;
+  correct: number;
+  time_ms: number;
+}
+
+/**
+ * Today's best results: most hands right, then fastest, then first to finish.
+ * Test accounts (@example.test) are left off, same as the rated leaderboard.
+ */
+export async function dailyLeaderboard(
+  day: string,
+  limit = 20,
+): Promise<{ rows: DailyLeaderboardRow[]; players: number }> {
+  const [rows, count] = await Promise.all([
+    query<DailyLeaderboardRow>(
+      `SELECT d.user_id, u.username, d.correct, d.time_ms
+         FROM daily_results d
+         JOIN users u ON u.id = d.user_id
+        WHERE d.day = $1 AND u.email_lower NOT LIKE '%@example.test'
+     ORDER BY d.correct DESC, d.time_ms ASC, d.created_at ASC
+        LIMIT $2`,
+      [day, limit],
+    ),
+    queryOne<{ n: string }>(
+      `SELECT count(*) AS n
+         FROM daily_results d
+         JOIN users u ON u.id = d.user_id
+        WHERE d.day = $1 AND u.email_lower NOT LIKE '%@example.test'`,
+      [day],
+    ),
+  ]);
+  return { rows, players: Number(count?.n ?? 0) };
+}
