@@ -17,7 +17,11 @@ export function dailyKey(at: Date = new Date()): string {
 
 export function isDailyKey(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  return dailyKey(new Date(`${value}T00:00:00Z`)) === value;
+  // Month 13 or day 32 makes an Invalid Date, and toISOString() throws on it.
+  // This runs on raw request input, so check before formatting.
+  const at = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) return false;
+  return dailyKey(at) === value;
 }
 
 /** The key for the day before `key`. */

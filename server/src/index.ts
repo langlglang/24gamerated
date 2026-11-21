@@ -593,6 +593,13 @@ if (isDatabaseConfigured()) {
   sweeper.unref?.();
 }
 
+// Express 4 doesn't catch errors thrown inside async route handlers, and Node
+// exits on an unhandled rejection by default. One bad request must never take
+// the whole game down for everyone, so log it and keep serving.
+process.on('unhandledRejection', (err) => {
+  console.error('[server] unhandled rejection (kept running):', err);
+});
+
 async function boot(): Promise<void> {
   if (isDatabaseConfigured()) {
     try {
