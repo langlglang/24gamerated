@@ -1,450 +1,192 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DAILY_RULES,
-  HAND_IDLE_TIMEOUT_MS,
-  HANDS_PER_MATCH,
+  PUZZLE_RULES,
+  applyCombine,
+  checkPuzzleSolution,
   dailyKey,
-  dailyNumber,
-  dailyShareText,
-  dealDaily,
   formatDailyTime,
-  scoreDaily,
-  type DailyFriendView,
-  type DailyHandRecord,
-  type DailyResultView,
-  type DailyLeaderboardView,
-  type DailyTodayView,
+  puzzleShareText,
+  tableFromCards,
+  type CombineStep,
+  type DailyPuzzleView,
+  type DailyStatsView,
+  type SolveTimeBucket,
+  type TableCard,
 } from '@24game/shared';
-import { apiDelete, apiGet, apiPost } from '../api.js';
-import { SoloBoard } from '../components/SoloBoard.js';
-import { useTraining } from '../training.js';
+import { apiGet, apiPost } from '../api.js';
+import { CombineBoard } from '../components/CombineBoard.js';
 import type { AuthApi } from '../useAuth.js';
 
 // ------------------------------------------------------------ local progress
 
 /**
- * Progress lives in localStorage so a refresh resumes where you left off. A
- * hand that was dealt but never finished counts as missed on resume, so
- * reloading is never a way to see the cards and try again.
+ * The clock and any solve live in localStorage, per day and per account
+ * ("guest" when signed out), so a refresh never resets the clock.
  */
-interface LocalDaily {
-  records: DailyHandRecord[];
-  /** Index of the hand on screen, or null between hands. */
-  dealtHand: number | null;
+interface LocalPuzzle {
+  startedAt: number;
+  solved: { timeMs: number; steps: CombineStep[] } | null;
+  /** The server has recorded this solve (signed-in only). */
+  submitted: boolean;
+  /** The server definitively refused this solve (4xx other than 401): don't re-POST. */
+  submitError?: string | null;
 }
 
-/** Progress is per account (or "guest") so a shared device never mixes runs. */
-const storageKey = (day: string, owner: string) => `24game.daily.${day}.${owner}`;
+const storageKey = (day: string, owner: string) => `24game.puzzle.${day}.${owner}`;
 
-function loadLocal(day: string, owner: string): LocalDaily {
+function loadLocal(day: string, owner: string): LocalPuzzle | null {
   try {
     const raw = localStorage.getItem(storageKey(day, owner));
-    if (raw) return JSON.parse(raw) as LocalDaily;
+    if (raw) return JSON.parse(raw) as LocalPuzzle;
   } catch {
     // Unreadable or blocked storage: start fresh.
   }
-  return { records: [], dealtHand: null };
+  return null;
 }
 
-function saveLocal(day: string, owner: string, value: LocalDaily): void {
+function saveLocal(day: string, owner: string, value: LocalPuzzle): void {
   try {
     localStorage.setItem(storageKey(day, owner), JSON.stringify(value));
   } catch {
-    // Private mode: progress just won't survive a refresh.
+    // Private mode: the clock just won't survive a refresh.
   }
 }
 
 /**
- * Load an account's progress. A guest run on this device is claimed by the
- * first account that signs in without progress of its own, then cleared.
+ * An account with no progress of its own claims a guest run from this device
+ * (so a guest who solves, then signs in, gets counted), then the guest copy
+ * is cleared.
  */
-function loadFor(day: string, owner: string): LocalDaily {
+function loadFor(day: string, owner: string): LocalPuzzle | null {
   const own = loadLocal(day, owner);
-  if (owner === 'guest' || own.records.length > 0) return own;
+  if (owner === 'guest') return own;
   const guest = loadLocal(day, 'guest');
-  if (guest.records.length === 0) return own;
-  saveLocal(day, owner, guest);
+  // Only a guest run with a solve or a start is worth claiming.
+  if (!guest || (!guest.solved && !guest.startedAt)) return own;
+  // Keep the account's own copy unless the guest solved and the account hasn't.
+  if (own && !(guest.solved && !own.solved)) return own;
+  const claimed: LocalPuzzle = { ...guest, submitted: false, submitError: null };
+  saveLocal(day, owner, claimed);
   try {
     localStorage.removeItem(storageKey(day, 'guest'));
   } catch {
     // Ignore: worst case the guest copy lingers.
   }
-  return guest;
+  return claimed;
 }
 
-/** Fold an abandoned hand into the records as a miss. */
-function settleAbandoned(local: LocalDaily): LocalDaily {
-  if (local.dealtHand === null || local.dealtHand !== local.records.length) return local;
-  return {
-    records: [...local.records, { steps: null, noSolution: false, ms: HAND_IDLE_TIMEOUT_MS }],
-    dealtHand: null,
-  };
+// ------------------------------------------------------------ helpers
+
+function formatClock(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${String(m).padStart(2, '0')}:${sec}`;
 }
 
-// --------------------------------------------------------------- pieces
-
-function ResultGrid({ hands }: { hands: readonly boolean[] }) {
-  return (
-    <div className="flex justify-center gap-1" aria-label={`${hands.filter(Boolean).length} of ${hands.length} hands right`}>
-      {hands.map((ok, i) => (
-        <span
-          key={i}
-          aria-hidden="true"
-          className={`h-4 w-4 rounded-sm border-2 border-ink ${ok ? 'bg-ink' : 'bg-card'}`}
-        />
-      ))}
-    </div>
-  );
+/** m:ss for axis ticks. */
+function shortTime(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s >= 3600) return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/**
- * Today's top results for everyone. Hidden until you've finished your own run,
- * like friends' scores, so nobody plays chasing a time they've already seen.
- */
-function DailyLeaderboard({
-  board,
-  unlocked,
-  meId,
-  signedIn,
-}: {
-  board: DailyLeaderboardView | null;
-  unlocked: boolean;
-  meId: string | null;
-  signedIn: boolean;
-}) {
-  const players = board?.players ?? 0;
-  return (
-    <section className="flex flex-col gap-3" aria-labelledby="daily-board-title">
-      <div className="rule flex items-baseline justify-between pt-4">
-        <h2 id="daily-board-title" className="font-display text-2xl font-extrabold">
-          Today’s leaderboard
-        </h2>
-        <span className="text-sm text-muted">
-          {players} {players === 1 ? 'player' : 'players'}
-        </span>
-      </div>
-      {!board ? (
-        <p className="text-sm text-muted">The leaderboard isn’t available right now.</p>
-      ) : !unlocked ? (
-        <p className="text-sm text-muted">
-          {players === 0
-            ? 'Nobody has finished today’s daily yet. Be the first on the board.'
-            : 'Finish today’s daily to see where you’d rank.'}
-        </p>
-      ) : board.entries.length === 0 ? (
-        <p className="text-sm text-muted">
-          {signedIn
-            ? 'Nobody’s on the board yet. Your result will show up here once it’s saved.'
-            : 'Nobody’s on the board yet. Sign in to save your result and take the top spot.'}
-        </p>
-      ) : (
-        <>
-          <ol className="divide-y divide-line border-y border-ink">
-            {board.entries.map((e) => {
-              const mine = e.userId === meId;
-              return (
-                <li
-                  key={e.userId}
-                  className={[
-                    'flex items-center justify-between gap-3 px-1 py-2 text-sm',
-                    mine ? 'bg-mark' : '',
-                  ].join(' ')}
-                >
-                  <span className="flex min-w-0 items-baseline gap-3">
-                    <span className="w-6 shrink-0 text-right tabular-nums text-muted">{e.rank}</span>
-                    <span className={`truncate ${mine ? 'font-semibold' : ''}`}>
-                      {e.username}
-                      {mine && <span className="text-muted"> (you)</span>}
-                    </span>
-                  </span>
-                  <span className="shrink-0 tabular-nums">
-                    <span className="font-display text-lg font-extrabold">{e.correct}</span>
-                    <span className="text-muted">/{HANDS_PER_MATCH}</span>
-                    <span className="ml-2 text-muted">{formatDailyTime(e.timeMs)}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-          {!signedIn && (
-            <p className="text-xs text-muted">Sign in to save your result and appear here.</p>
-          )}
-        </>
-      )}
-    </section>
-  );
-}
-
-function ResultCard({ day, result }: { day: string; result: DailyResultView }) {
-  const [copied, setCopied] = useState(false);
-  async function share() {
-    try {
-      await navigator.clipboard.writeText(dailyShareText(day, result));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard blocked; nothing else to do.
-    }
+/** Replay steps from the deal; null if any step no longer applies. */
+function replay(view: DailyPuzzleView, steps: readonly CombineStep[]): TableCard[] | null {
+  let table = tableFromCards(view.cards);
+  for (const [i, step] of steps.entries()) {
+    const r = applyCombine(table, step, PUZZLE_RULES, i);
+    if (!r.ok) return null;
+    table = r.table;
   }
-  return (
-    <div className="panel flex flex-col items-center gap-3 text-center">
-      <p className="eyebrow">Your result</p>
-      <p className="font-display text-6xl font-extrabold leading-none tabular-nums">
-        {result.correct}
-        <span className="text-3xl text-muted">/{result.hands.length}</span>
-      </p>
-      <p className="text-sm text-muted">Time {formatDailyTime(result.timeMs)}</p>
-      <ResultGrid hands={result.hands} />
-      <button type="button" className="btn-secondary w-full" onClick={() => void share()}>
-        {copied ? 'Copied' : 'Copy result to share'}
-      </button>
-    </div>
-  );
+  return table;
 }
 
-function FriendRow({
-  friend,
-  onRemove,
-}: {
-  friend: DailyFriendView;
-  onRemove: (id: string) => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const { wins, losses, ties } = friend.record;
-  const today = friend.result
-    ? `${friend.result.correct}/${friend.result.hands.length} · ${formatDailyTime(friend.result.timeMs)}`
-    : friend.played
-      ? 'Played. Finish yours to see it.'
-      : 'Not played yet';
-
-  return (
-    <li className="flex items-center justify-between gap-3 py-3">
-      <div className="min-w-0">
-        <p className="truncate font-semibold">{friend.username}</p>
-        <p className="text-sm text-muted">{today}</p>
-        <p className="text-xs text-muted">
-          You {wins}–{losses}
-          {ties > 0 && `–${ties}`} all time
-        </p>
-      </div>
-      {confirming ? (
-        <span className="flex shrink-0 gap-2">
-          <button
-            type="button"
-            className="btn-danger min-h-[44px] px-3 text-sm"
-            onClick={() => onRemove(friend.userId)}
-          >
-            Remove {friend.username}
-          </button>
-          <button
-            type="button"
-            className="btn-secondary min-h-[44px] px-3 text-sm"
-            onClick={() => setConfirming(false)}
-          >
-            Keep
-          </button>
-        </span>
-      ) : (
-        <button
-          type="button"
-          className="min-h-[44px] shrink-0 px-2 text-sm text-muted underline"
-          onClick={() => setConfirming(true)}
-        >
-          Remove
-        </button>
-      )}
-    </li>
-  );
+/** Approximate share of recorded solvers slower than `timeMs`, from buckets. */
+function approxFasterThan(stats: DailyStatsView, timeMs: number): number | null {
+  if (stats.solvers === 0) return null;
+  let slower = 0;
+  for (const b of stats.buckets) {
+    if (b.fromMs >= timeMs) slower += b.count;
+    else if (b.toMs > timeMs) slower += (b.count * (b.toMs - timeMs)) / Math.max(1, b.toMs - b.fromMs);
+  }
+  return Math.max(0, Math.min(100, Math.round((slower / stats.solvers) * 100)));
 }
 
-// --------------------------------------------------------------- play
-
-function DailyPlay({
-  day,
-  owner,
-  initial,
-  onFinished,
-  onExit,
-}: {
-  day: string;
-  owner: string;
-  initial: LocalDaily;
-  onFinished: (records: DailyHandRecord[]) => void;
-  onExit: () => void;
-}) {
-  const local = useRef<LocalDaily>(initial);
-  const hands = useMemo(() => dealDaily(day), [day]);
-
-  const { game, state } = useTraining(DAILY_RULES, {
-    hands,
-    completed: initial.records,
-    onHandStart: (index) => {
-      local.current = { ...local.current, dealtHand: index };
-      saveLocal(day, owner, local.current);
-    },
-    onHandEnd: (index, record) => {
-      if (index !== local.current.records.length) return;
-      local.current = { records: [...local.current.records, record], dealtHand: null };
-      saveLocal(day, owner, local.current);
-    },
-  });
-
-  useEffect(() => {
-    if (state.phase === 'done') onFinished(local.current.records);
-  }, [state.phase, onFinished]);
-
-  const score = scoreDaily(day, local.current.records);
-
-  return (
-    <SoloBoard
-      game={game}
-      state={state}
-      header={
-        <header className="flex h-11 items-center justify-between border-b border-ink text-sm">
-          <button
-            type="button"
-            className="-ml-1 min-h-[44px] px-1 font-semibold underline"
-            onClick={onExit}
-          >
-            Pause
-          </button>
-          <span className="font-display text-xl font-extrabold">Daily #{dailyNumber(day)}</span>
-          <span className="font-semibold tabular-nums">
-            {Math.min(state.handNumber, HANDS_PER_MATCH)}/{HANDS_PER_MATCH}
-          </span>
-        </header>
-      }
-      above={
-        <p className="text-center text-sm text-muted">
-          {score.correct} right so far · same 13 hands for everyone today
-        </p>
-      }
-    />
-  );
+/** Fractional bucket position of a time on the evenly spaced x axis. */
+function bucketPosition(buckets: readonly SolveTimeBucket[], timeMs: number): number {
+  if (buckets.length === 0) return 0;
+  if (timeMs <= buckets[0]!.fromMs) return 0;
+  for (const [i, b] of buckets.entries()) {
+    if (timeMs < b.toMs) return i + (timeMs - b.fromMs) / Math.max(1, b.toMs - b.fromMs);
+  }
+  return buckets.length;
 }
 
-// --------------------------------------------------------------- screen
+// ------------------------------------------------------------ screen
 
-export function Daily({
-  auth,
-  onExit,
-  onSignIn,
-}: {
+interface Props {
   auth: AuthApi;
   onExit: () => void;
   onSignIn: () => void;
-}) {
-  const day = useMemo(() => dailyKey(), []);
+}
+
+type StatsState =
+  | { kind: 'idle' | 'loading' }
+  | { kind: 'ready'; stats: DailyStatsView }
+  | { kind: 'unavailable' }
+  | { kind: 'error'; message: string };
+
+export function Daily({ auth, onExit, onSignIn }: Props) {
+  const [puzzle, setPuzzle] = useState<DailyPuzzleView | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const owner = auth.user?.id ?? 'guest';
-  const [local, setLocal] = useState<LocalDaily>(() => settleAbandoned(loadFor(day, owner)));
-  // Signing in or out mid-screen switches whose progress is shown.
-  useEffect(() => {
-    setLocal(settleAbandoned(loadFor(day, owner)));
-  }, [day, owner]);
-  const [playing, setPlaying] = useState(false);
-  const [view, setView] = useState<DailyTodayView | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [friendName, setFriendName] = useState('');
-  const [friendError, setFriendError] = useState<string | null>(null);
-  const signedIn = Boolean(auth.token && auth.user);
+  const signedIn = Boolean(auth.user && auth.token);
 
-  const finished = local.records.length >= HANDS_PER_MATCH;
-  const localScore = finished ? scoreDaily(day, local.records) : null;
-  const myResult: DailyResultView | null = view?.mine ?? localScore;
+  const token = auth.token;
+  const loadSeq = useRef(0);
+  const [newDayOut, setNewDayOut] = useState(false);
+  const [solvedNow, setSolvedNow] = useState(false);
 
-  const [board, setBoard] = useState<DailyLeaderboardView | null>(null);
-  const loadBoard = useCallback(async () => {
-    const res = await apiGet<DailyLeaderboardView>('/api/daily/leaderboard');
-    setBoard(res.ok ? res.data : null);
-  }, []);
-  // Reload whenever the saved result changes, so your new row appears.
-  useEffect(() => {
-    void loadBoard();
-  }, [loadBoard, view?.mine]);
-
-  const refresh = useCallback(async () => {
-    setView(null);
-    if (!auth.token) return;
-    const res = await apiGet<DailyTodayView>('/api/daily/today', auth.token);
-    if (res.ok) setView(res.data);
-    else if (res.status !== 503) setError(res.error);
-  }, [auth.token]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  // Save a finished run once: on finishing, or later after signing in.
-  const submitting = useRef(false);
-  useEffect(() => {
-    if (!signedIn || !finished || !view || view.mine || submitting.current) return;
-    submitting.current = true;
-    void (async () => {
-      const res = await apiPost<DailyTodayView>(
-        '/api/daily/submit',
-        { day, hands: local.records },
-        auth.token,
-      );
-      submitting.current = false;
-      if (res.ok) setView(res.data);
-      else if (res.status === 409) void refresh();
-      else setError(res.error);
-    })();
-  }, [signedIn, finished, view, day, local.records, auth.token, refresh]);
-
-  const onFinished = useCallback(
-    (records: DailyHandRecord[]) => {
-      setLocal({ records, dealtHand: null });
-      setPlaying(false);
-    },
-    [],
-  );
-
-  async function addFriend() {
-    if (!friendName.trim()) {
-      setFriendError('Enter your friend’s username.');
-      return;
-    }
-    const res = await apiPost<DailyTodayView>('/api/friends', { username: friendName }, auth.token);
+  // Fetched with the token so the server starts this account's clock.
+  const loadPuzzle = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    setLoadError(null);
+    const res = await apiGet<DailyPuzzleView>('/api/daily/puzzle', token);
+    if (seq !== loadSeq.current) return;
     if (res.ok) {
-      setView(res.data);
-      setFriendName('');
-      setFriendError(null);
-    } else {
-      setFriendError(res.error);
-    }
-  }
+      setPuzzle(res.data);
+      setNewDayOut(false);
+    } else setLoadError('Today’s puzzle didn’t load. Check your connection and try again.');
+  }, [token]);
 
-  async function removeFriend(userId: string) {
-    const res = await apiDelete<DailyTodayView>(`/api/friends/${userId}`, auth.token);
-    if (res.ok) setView(res.data);
-    else setError(res.error);
-  }
+  // Wait for auth, then (re)fetch whenever the signed-in account changes.
+  useEffect(() => {
+    if (auth.loading) return;
+    void loadPuzzle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.loading, owner]);
 
-  if (playing) {
-    return (
-      <DailyPlay
-        day={day}
-        owner={owner}
-        initial={local}
-        onFinished={onFinished}
-        onExit={() => {
-          setLocal(settleAbandoned(loadFor(day, owner)));
-          setPlaying(false);
-        }}
-      />
-    );
-  }
+  // Midnight UTC while the page is open: offer today's puzzle, don't swap it in.
+  useEffect(() => {
+    if (!puzzle) return;
+    const check = () => setNewDayOut(dailyKey() !== puzzle.day);
+    check();
+    const id = window.setInterval(check, 30_000);
+    return () => window.clearInterval(id);
+  }, [puzzle]);
 
-  const started = local.records.length > 0;
-  const date = new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
-    month: 'long',
-    day: 'numeric',
-    timeZone: 'UTC',
-  });
+  const date = puzzle
+    ? new Date(`${puzzle.day}T00:00:00Z`).toLocaleDateString(undefined, {
+        month: 'long',
+        day: 'numeric',
+        timeZone: 'UTC',
+      })
+    : '';
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-md flex-col gap-5 px-5 pb-8 pt-3">
+    <div className="mx-auto flex min-h-full w-full max-w-md flex-col gap-4 px-5 pb-8 pt-3">
       <header className="flex h-11 items-center justify-between border-b border-ink">
         <button
           type="button"
@@ -456,95 +198,416 @@ export function Daily({
             <path d="M15 6l-6 6 6 6" />
           </svg>
         </button>
-        <span className="font-display text-xl font-extrabold">Daily #{dailyNumber(day)}</span>
-        <span className="whitespace-nowrap text-right text-sm text-muted">{date}</span>
+        <span className="font-display text-xl font-extrabold">
+          Daily{puzzle ? ` #${puzzle.number}` : ''}
+        </span>
+        <span className="min-w-11 whitespace-nowrap text-right text-sm text-muted">{date}</span>
       </header>
 
-      {myResult ? (
-        <ResultCard day={day} result={myResult} />
-      ) : (
-        <div className="flex flex-col gap-3 pt-4 text-center">
-          <h1 className="font-display text-4xl font-extrabold">Today’s 24</h1>
-          <p className="text-muted">
-            Same 13 hands for everyone, one try a day. Most hands right wins; time breaks ties.
-            New deck at midnight UTC.
-          </p>
-          <button type="button" className="btn-primary mt-2 h-14 text-lg" onClick={() => setPlaying(true)}>
-            {started ? `Resume at hand ${local.records.length + 1}` : 'Play today’s daily'}
+      {loadError ? (
+        <div className="flex flex-col items-center gap-4 pt-10 text-center">
+          <p role="alert" className="text-bad">{loadError}</p>
+          <button type="button" className="btn-primary h-12 px-6" onClick={() => void loadPuzzle()}>
+            Try again
           </button>
-          {started && (
-            <p className="text-xs text-muted">A hand you left mid-way counts as missed.</p>
-          )}
         </div>
+      ) : !puzzle || auth.loading ? (
+        <p className="pt-10 text-center text-muted" role="status">Loading today’s puzzle…</p>
+      ) : (
+        <>
+          {newDayOut && !solvedNow && (
+            <div className="panel flex items-center justify-between gap-3 p-3" role="status">
+              <p className="text-sm">A new puzzle is out.</p>
+              <button type="button" className="btn-secondary h-11 px-4 text-sm" onClick={() => void loadPuzzle()}>
+                Load today’s puzzle
+              </button>
+            </div>
+          )}
+          <PuzzleGame
+            key={`${puzzle.day}.${owner}`}
+            puzzle={puzzle}
+            owner={owner}
+            signedIn={signedIn}
+            token={auth.token}
+            onSignIn={onSignIn}
+            onSolvedChange={setSolvedNow}
+          />
+        </>
       )}
+    </div>
+  );
+}
 
-      {error && (
-        <p role="alert" className="text-center text-sm text-bad">
-          {error}
-        </p>
-      )}
+// ------------------------------------------------------------ play + result
 
-      <DailyLeaderboard
-        board={board}
-        unlocked={Boolean(myResult)}
-        meId={auth.user?.id ?? null}
+interface GameProps {
+  puzzle: DailyPuzzleView;
+  owner: string;
+  signedIn: boolean;
+  token: string | null;
+  onSignIn: () => void;
+  onSolvedChange: (solved: boolean) => void;
+}
+
+function PuzzleGame({ puzzle, owner, signedIn, token, onSignIn, onSolvedChange }: GameProps) {
+  const [local, setLocal] = useState<LocalPuzzle>(() => {
+    const stored = loadFor(puzzle.day, owner);
+    if (stored) return stored;
+    const fresh: LocalPuzzle = { startedAt: Date.now(), solved: null, submitted: false };
+    saveLocal(puzzle.day, owner, fresh);
+    return fresh;
+  });
+
+  const update = useCallback(
+    (next: LocalPuzzle) => {
+      saveLocal(puzzle.day, owner, next);
+      setLocal(next);
+    },
+    [puzzle.day, owner],
+  );
+
+  const isSolved = Boolean(local.solved);
+  useEffect(() => onSolvedChange(isSolved), [isSolved, onSolvedChange]);
+
+  if (local.solved) {
+    return (
+      <Solved
+        puzzle={puzzle}
+        local={local}
+        solved={local.solved}
         signedIn={signedIn}
+        token={token}
+        onSignIn={onSignIn}
+        onSubmitted={(timeMs) =>
+          update({
+            ...local,
+            solved: local.solved && timeMs !== undefined ? { ...local.solved, timeMs } : local.solved,
+            submitted: true,
+            submitError: null,
+          })
+        }
+        onSubmitError={(message) => update({ ...local, submitError: message })}
+      />
+    );
+  }
+
+  return (
+    <Play
+      puzzle={puzzle}
+      startedAt={local.startedAt}
+      onSolved={(steps) =>
+        update({ ...local, solved: { timeMs: Date.now() - local.startedAt, steps }, submitted: false })
+      }
+    />
+  );
+}
+
+function Play({
+  puzzle,
+  startedAt,
+  onSolved,
+}: {
+  puzzle: DailyPuzzleView;
+  startedAt: number;
+  onSolved: (steps: CombineStep[]) => void;
+}) {
+  const [steps, setSteps] = useState<CombineStep[]>([]);
+  const [error, setError] = useState<{ nonce: number; message: string } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const table = useMemo(() => replay(puzzle, steps) ?? tableFromCards(puzzle.cards), [puzzle, steps]);
+  const finalCard = table.length === 1 ? table[0]! : null;
+  const missed = finalCard !== null && !checkPuzzleSolution({ ...puzzle, ways: 0 }, steps).ok;
+
+  function combine(step: CombineStep) {
+    const r = applyCombine(table, step, PUZZLE_RULES, steps.length);
+    if (!r.ok) {
+      setError((e) => ({
+        nonce: (e?.nonce ?? 0) + 1,
+        message: r.error === 'div-by-zero' ? 'You can’t divide by zero.' : 'That move doesn’t work. Try another.',
+      }));
+      return;
+    }
+    const next = [...steps, step];
+    setError(null);
+    setSteps(next);
+    if (r.table.length === 1 && checkPuzzleSolution({ ...puzzle, ways: 0 }, next).ok) onSolved(next);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-end justify-between">
+        <div>
+          <p className="eyebrow">Use every card</p>
+          <h1 className="font-display text-5xl font-extrabold leading-none">
+            Make <span className="tabular-nums">{puzzle.target}</span>
+          </h1>
+        </div>
+        <p className="font-display text-2xl font-bold tabular-nums" aria-label={`Time ${formatClock(now - startedAt)}`}>
+          {formatClock(now - startedAt)}
+        </p>
+      </div>
+
+      <CombineBoard
+        dealt={puzzle.cards}
+        table={table}
+        interactive={!missed}
+        onCombine={combine}
+        errorNonce={error?.nonce ?? 0}
+        errorMessage={error?.message ?? null}
+        columns={3}
       />
 
-      {signedIn ? (
-        view && (
-          <section className="flex flex-col gap-3">
-            <h2 className="rule pt-4 font-display text-2xl font-extrabold">Friends</h2>
-            {view.friends.length === 0 ? (
-              <p className="text-sm text-muted">
-                Add a friend by username to see their daily score next to yours, and your
-                record against them day after day.
+      <p role="status" aria-live="polite" className="text-center font-medium empty:hidden">
+        {missed && finalCard ? `That makes ${finalCard.label} — not ${puzzle.target}. Try again.` : ''}
+      </p>
+
+      <div className="grid grid-cols-2 gap-3">
+        <button
+          type="button"
+          className="btn-secondary h-12"
+          disabled={steps.length === 0}
+          onClick={() => {
+            setError(null);
+            setSteps((s) => s.slice(0, -1));
+          }}
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          className={`${missed ? 'btn-primary' : 'btn-secondary'} h-12`}
+          disabled={steps.length === 0}
+          onClick={() => {
+            setError(null);
+            setSteps([]);
+          }}
+        >
+          Start over
+        </button>
+      </div>
+      <p className="text-center text-sm text-muted">Unlimited tries. The clock keeps running until you solve it.</p>
+    </div>
+  );
+}
+
+function Solved({
+  puzzle,
+  local,
+  solved,
+  signedIn,
+  token,
+  onSignIn,
+  onSubmitted,
+  onSubmitError,
+}: {
+  puzzle: DailyPuzzleView;
+  local: LocalPuzzle;
+  solved: { timeMs: number; steps: CombineStep[] };
+  signedIn: boolean;
+  token: string | null;
+  onSignIn: () => void;
+  onSubmitted: (serverTimeMs: number | undefined) => void;
+  onSubmitError: (message: string) => void;
+}) {
+  const [state, setState] = useState<StatsState>({ kind: 'idle' });
+  const [copied, setCopied] = useState(false);
+  const started = useRef(false);
+
+  // A sign-in problem or a definitive refusal; the curve still shows (estimate).
+  const [submitNote, setSubmitNote] = useState<{ kind: 'auth' } | { kind: 'refused'; message: string } | null>(
+    local.submitError ? { kind: 'refused', message: local.submitError } : null,
+  );
+
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    setState({ kind: 'loading' });
+    const statsPath = `/api/daily/stats?day=${encodeURIComponent(puzzle.day)}`;
+    const showStats = (res: Awaited<ReturnType<typeof apiGet<DailyStatsView>>>) => {
+      if (res.ok) setState({ kind: 'ready', stats: res.data });
+      else if (res.status === 503) setState({ kind: 'unavailable' });
+      else setState({ kind: 'error', message: res.error });
+    };
+    void (async () => {
+      const shouldPost = signedIn && !local.submitted && !local.submitError;
+      if (!shouldPost) {
+        showStats(await apiGet<DailyStatsView>(statsPath, token));
+        return;
+      }
+      const res = await apiPost<DailyStatsView>(
+        '/api/daily/solve',
+        { day: puzzle.day, steps: solved.steps, timeMs: solved.timeMs },
+        token,
+      );
+      if (res.ok) {
+        onSubmitted(res.data.mine?.timeMs);
+        setState({ kind: 'ready', stats: res.data });
+        return;
+      }
+      if (res.status === 401) {
+        // Session expired: keep everything, ask to sign in again (retries next mount).
+        setSubmitNote({ kind: 'auth' });
+      } else if (res.status >= 400 && res.status < 500) {
+        // Definitive refusal: remember it so we don't re-POST on every visit.
+        onSubmitError(res.error);
+        setSubmitNote({ kind: 'refused', message: res.error });
+      } else if (res.status === 503) {
+        setState({ kind: 'unavailable' });
+        return;
+      }
+      // 5xx / network errors simply retry on the next mount.
+      showStats(await apiGet<DailyStatsView>(statsPath, token));
+    })();
+  }, [signedIn, local.submitted, local.submitError, puzzle.day, solved, token, onSubmitted, onSubmitError]);
+
+  const stats = state.kind === 'ready' ? state.stats : null;
+  // The server's own number counts this solve; a guest gets an estimate.
+  const mineTime = stats?.mine?.timeMs ?? solved.timeMs;
+  const pct = stats ? (stats.mine?.fasterThanPct ?? approxFasterThan(stats, mineTime)) : null;
+  const counted = Boolean(stats?.mine);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(puzzleShareText(puzzle, mineTime, pct));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-5 pt-2">
+      <div className="text-center">
+        <p className="eyebrow">Solved · Make {puzzle.target}</p>
+        <p className="font-display text-6xl font-extrabold tabular-nums">{formatDailyTime(mineTime)}</p>
+      </div>
+
+      <section className="panel flex flex-col gap-3 p-4" aria-labelledby="curve-title">
+        <h2 id="curve-title" className="font-display text-lg font-bold">Today’s solve times</h2>
+        {state.kind === 'idle' || state.kind === 'loading' ? (
+          <p className="text-sm text-muted" role="status">Loading the curve…</p>
+        ) : state.kind === 'unavailable' ? (
+          <p className="text-sm text-muted">The curve isn’t available right now. Your time is saved on this device.</p>
+        ) : state.kind === 'error' ? (
+          <p className="text-sm text-bad" role="alert">{state.message}</p>
+        ) : stats && stats.solvers <= (counted ? 1 : 0) ? (
+          <p className="text-sm">You’re the first to solve today’s puzzle.</p>
+        ) : stats ? (
+          <>
+            <SolveCurve buckets={stats.buckets} timeMs={mineTime} />
+            {pct !== null && (
+              <p className="text-center text-lg">
+                Faster than <strong>{pct}%</strong> of players
+                {!counted && ' (estimate)'}
               </p>
-            ) : (
-              <ul className="divide-y divide-line">
-                {view.friends.map((f) => (
-                  <FriendRow key={f.userId} friend={f} onRemove={(id) => void removeFriend(id)} />
-                ))}
-              </ul>
             )}
-            <div>
-              <label htmlFor="friend-username" className="mb-1.5 block text-sm font-semibold">
-                Add a friend
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="friend-username"
-                  className="field flex-1"
-                  autoComplete="off"
-                  placeholder="Username"
-                  value={friendName}
-                  onChange={(e) => {
-                    setFriendName(e.target.value);
-                    setFriendError(null);
-                  }}
-                />
-                <button type="button" className="btn-primary" onClick={() => void addFriend()}>
-                  Add
-                </button>
-              </div>
-              {friendError && (
-                <p role="alert" className="mt-1.5 text-sm text-bad">
-                  {friendError}
-                </p>
-              )}
-            </div>
-          </section>
-        )
-      ) : (
-        <div className="rule flex flex-col gap-3 pt-4 text-center">
-          <p className="text-sm text-muted">
-            Sign in to save your result and see how your friends did, day after day.
-          </p>
-          <button type="button" className="btn-secondary" onClick={onSignIn}>
+            <p className="text-center text-sm text-muted">
+              {stats.solvers.toLocaleString()} {stats.solvers === 1 ? 'player has' : 'players have'} solved
+              today’s puzzle
+            </p>
+            {stats.medianMs !== null && (
+              <p className="text-center text-sm text-muted">Median {formatDailyTime(stats.medianMs)}</p>
+            )}
+          </>
+        ) : null}
+      </section>
+
+      {submitNote?.kind === 'auth' && (
+        <div className="flex flex-col gap-2 text-center" role="alert">
+          <p className="text-sm">Sign in again to be counted.</p>
+          <button type="button" className="btn-secondary h-12" onClick={onSignIn}>
             Sign in
           </button>
         </div>
       )}
+      {submitNote?.kind === 'refused' && (
+        <p className="text-center text-sm text-bad" role="alert">{submitNote.message}</p>
+      )}
+
+      {!signedIn && (
+        <div className="flex flex-col gap-2 text-center">
+          <p className="text-sm text-muted">Sign in to be counted on the curve.</p>
+          <button type="button" className="btn-secondary h-12" onClick={onSignIn}>
+            Sign in
+          </button>
+        </div>
+      )}
+
+      <button type="button" className="btn-primary h-12" onClick={() => void copy()}>
+        {copied ? 'Copied' : 'Copy result'}
+      </button>
+      <p className="sr-only" role="status">{copied ? 'Result copied to clipboard.' : ''}</p>
+      <p className="text-center text-sm text-muted">New puzzle at midnight UTC.</p>
     </div>
+  );
+}
+
+// ------------------------------------------------------------ chart
+
+const W = 320;
+const H = 140;
+const PAD_X = 8;
+const PLOT_TOP = 22;
+const PLOT_BOTTOM = 112;
+
+function SolveCurve({ buckets, timeMs }: { buckets: readonly SolveTimeBucket[]; timeMs: number }) {
+  if (buckets.length === 0) return null;
+  const n = buckets.length;
+  const max = Math.max(1, ...buckets.map((b) => b.count));
+  const xAt = (pos: number) => PAD_X + (pos / n) * (W - 2 * PAD_X);
+  const yAt = (count: number) => PLOT_BOTTOM - (count / max) * (PLOT_BOTTOM - PLOT_TOP);
+
+  const points = buckets.map((b, i) => [xAt(i + 0.5), yAt(b.count)] as const);
+  const line = [
+    `M ${xAt(0)} ${PLOT_BOTTOM}`,
+    ...points.map(([x, y]) => `L ${x.toFixed(1)} ${y.toFixed(1)}`),
+    `L ${xAt(n)} ${PLOT_BOTTOM}`,
+  ].join(' ');
+  const area = `${line} Z`;
+
+  const markerX = xAt(Math.min(n, Math.max(0, bucketPosition(buckets, timeMs))));
+  const tickIdx = [0, Math.round(n / 3), Math.round((2 * n) / 3), n];
+  const tickTime = (i: number) => (i >= n ? buckets[n - 1]!.toMs : buckets[i]!.fromMs);
+  const labelAnchor = markerX < W * 0.2 ? 'start' : markerX > W * 0.8 ? 'end' : 'middle';
+
+  const peak = buckets.reduce((a, b) => (b.count > a.count ? b : a));
+  const summary =
+    `Distribution of today’s solve times from ${shortTime(buckets[0]!.fromMs)} to ` +
+    `${shortTime(buckets[n - 1]!.toMs)}. Most players solved between ${shortTime(peak.fromMs)} and ` +
+    `${shortTime(peak.toMs)}. Your time, ${shortTime(timeMs)}, is marked.`;
+
+  return (
+    <figure className="m-0">
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={summary}>
+        <path d={area} className="fill-tile" />
+        <path d={line} fill="none" className="stroke-ink" strokeWidth={2} strokeLinejoin="round" />
+        <line x1={PAD_X} x2={W - PAD_X} y1={PLOT_BOTTOM} y2={PLOT_BOTTOM} className="stroke-line" strokeWidth={1} />
+        <line x1={markerX} x2={markerX} y1={PLOT_TOP - 4} y2={PLOT_BOTTOM} stroke="#f2c94c" strokeWidth={4} />
+        <line x1={markerX} x2={markerX} y1={PLOT_TOP - 4} y2={PLOT_BOTTOM} className="stroke-ink" strokeWidth={1} />
+        <text x={markerX} y={PLOT_TOP - 8} textAnchor={labelAnchor} className="fill-ink" fontSize={11} fontWeight={700}>
+          You · {shortTime(timeMs)}
+        </text>
+        {tickIdx.map((i, k) => (
+          <text
+            key={k}
+            x={xAt(i)}
+            y={PLOT_BOTTOM + 16}
+            textAnchor={k === 0 ? 'start' : k === tickIdx.length - 1 ? 'end' : 'middle'}
+            className="fill-muted"
+            fontSize={11}
+          >
+            {shortTime(tickTime(i))}
+          </text>
+        ))}
+      </svg>
+      <figcaption className="sr-only">{summary}</figcaption>
+    </figure>
   );
 }

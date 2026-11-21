@@ -20,6 +20,8 @@ interface Props {
   /** Bumped by the parent whenever the server rejects a combine. */
   errorNonce?: number;
   errorMessage?: string | null;
+  /** Card grid columns; 3 keeps a 5-6 card deal on one phone screen. */
+  columns?: 2 | 3;
 }
 
 export function CombineBoard({
@@ -29,6 +31,7 @@ export function CombineBoard({
   onCombine,
   errorNonce = 0,
   errorMessage,
+  columns = 2,
 }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingOp, setPendingOp] = useState<Op | null>(null);
@@ -77,7 +80,7 @@ export function CombineBoard({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid w-full grid-cols-2 gap-3">
+      <div className={`grid w-full gap-3 ${columns === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
         {table.map((card) => (
           <PlayingCard
             key={card.id}

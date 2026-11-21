@@ -106,32 +106,30 @@ consent to putting their rating up again. The series tally is a guest-room featu
 
 ---
 
-## Daily 24
+## Daily puzzle
 
-One deck a day, the same for everyone, played solo like Wordle. It's for playing against a friend
-day after day.
+One puzzle a day, the same for everyone. Solve time is the only measure.
 
-- **Same deck everywhere.** The 13 hands are derived from the UTC date (`dealDaily` in
-  `shared/src/daily.ts`, a seeded shuffle), so the client deals them without asking the server. A
-  new deck arrives at midnight UTC.
-- **One try a day.** You play with the same 5 s start and 10 s answer clocks as practice. Fixed
-  rules: fractions and negatives ON.
-- **Score.** Hands right (solved, or a correct "no solution" call), then total time as the
-  tiebreak. The server replays every submitted combine through the validator against that day's
-  deck, so claimed solutions are checked. Times are client-reported and only break ties.
-- **No re-rolls.** Progress is saved in `localStorage` (per account, or as a guest) so a refresh
-  resumes. A hand that was dealt but not finished counts as missed.
-- **Friends.** Signed-in players follow friends by username. The daily screen shows each friend's
-  result for today (hidden until you've played yourself) and your all-time record against them
-  over every day you both played.
-- **Today's leaderboard.** Everyone's best result for the day: most hands right, then fastest, then
-  first to finish. It's public (`GET /api/daily/leaderboard`), but the screen only shows the list
-  once you've finished your own run. Test accounts (`@example.test`) are left off.
-- **Guests** can play and get a share line. When they sign in, the run is saved to their account.
+- **The puzzle.** 5 cards Monday–Thursday, 6 cards Friday–Sunday (UTC). Combine them with + − × ÷,
+  every card used exactly once, to hit a 3-digit target. The deal comes from the UTC date
+  (`dailyPuzzle` in `shared/src/puzzle.ts`); the target is picked by an exhaustive search so it is
+  always reachable but has only a few solutions. A new puzzle arrives at midnight UTC.
+- **Unlimited retries.** Wrong answers cost nothing but time. There is no score beyond the time.
+- **The curve.** After solving you see a distribution curve of everyone's solve times for the day
+  (log-scale buckets), the median, and the share of other solvers you were faster than.
+- **Server-measured time.** When a signed-in player fetches the puzzle, the server records when
+  they first opened it (`daily_starts`). On solve, if that start exists, the stored time is the
+  server's elapsed time since then — the client's claimed time is ignored. Only when there is no
+  start (solved as a guest, then signed in) is the claimed time used. Under 3 s is rejected.
+  The first correct solve stands.
+- **Test accounts** (`@example.test`) are left out of the curve and solver count; they still see
+  where their own time would place.
 
-API (all need an account): `GET /api/daily/today`, `POST /api/daily/submit` (today's or yesterday's
-deck only; the first submission stands), `POST /api/friends`, `DELETE /api/friends/:userId`.
-Tables: `daily_results` and `follows` (migration `002_daily_and_friends`).
+API: `GET /api/daily/puzzle` (no account needed; with a bearer token it also starts your clock),
+`POST /api/daily/solve` (account; today's or yesterday's puzzle; body `{ day, steps, timeMs }`),
+`GET /api/daily/stats?day=` (public; includes your own time and faster-than % when signed in).
+Tables: `daily_solves` (migration `004`) and `daily_starts` (migration `005`). The old 13-hand
+daily's `daily_results` and `follows` tables are left in place, unused.
 
 ## Layout
 

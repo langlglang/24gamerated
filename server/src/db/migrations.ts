@@ -114,4 +114,34 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);
     `,
   },
+  {
+    name: '004_daily_puzzle_solves',
+    sql: `
+      -- One daily puzzle per day; the first correct solve is the only one kept.
+      -- daily_results and follows (the old 13-hand daily) stay for their data.
+      CREATE TABLE IF NOT EXISTS daily_solves (
+        user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day        date NOT NULL,
+        time_ms    integer NOT NULL CHECK (time_ms >= 0),
+        steps      jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, day)
+      );
+
+      CREATE INDEX IF NOT EXISTS daily_solves_day_time_idx ON daily_solves (day, time_ms);
+    `,
+  },
+  {
+    name: '005_daily_starts',
+    sql: `
+      -- When a signed-in player first opened a day's puzzle. The server clock
+      -- measures their solve time from here, so a client cannot claim a shorter one.
+      CREATE TABLE IF NOT EXISTS daily_starts (
+        user_id    uuid REFERENCES users(id) ON DELETE CASCADE,
+        day        date,
+        started_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, day)
+      );
+    `,
+  },
 ];
