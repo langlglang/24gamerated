@@ -131,4 +131,17 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS daily_solves_day_time_idx ON daily_solves (day, time_ms);
     `,
   },
+  {
+    name: '005_daily_starts',
+    sql: `
+      -- When a signed-in player first opened a day's puzzle. The server clock
+      -- measures their solve time from here, so a client cannot claim a shorter one.
+      CREATE TABLE IF NOT EXISTS daily_starts (
+        user_id    uuid REFERENCES users(id) ON DELETE CASCADE,
+        day        date,
+        started_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, day)
+      );
+    `,
+  },
 ];

@@ -17,7 +17,7 @@ import { RoomManager } from './rooms.js';
 import type { RatedMatchOutcome, Room } from './room.js';
 import { Matchmaker } from './matchmaking.js';
 import { createAuthRouter } from './auth/routes.js';
-import { createDailyRouter } from './daily/routes.js';
+import { createDailyRouter, warmDailyPuzzles } from './daily/routes.js';
 import { tokenMatchesPassword, verifyToken } from './auth/tokens.js';
 import { appUrl, isMailConfigured } from './auth/mailer.js';
 import { pruneExpiredResets } from './db/resets.js';
@@ -606,6 +606,7 @@ async function boot(): Promise<void> {
     console.warn('[db] DATABASE_URL not set — guest play only, rated features disabled');
   }
 
+  warmDailyPuzzles();
   httpServer.listen(PORT, () => {
     console.log(`24gamerated server listening on http://localhost:${PORT}`);
   });

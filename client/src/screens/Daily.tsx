@@ -3,6 +3,7 @@ import {
   PUZZLE_RULES,
   applyCombine,
   checkPuzzleSolution,
+  dailyKey,
   formatDailyTime,
   puzzleShareText,
   tableFromCards,
@@ -27,6 +28,8 @@ interface LocalPuzzle {
   solved: { timeMs: number; steps: CombineStep[] } | null;
   /** The server has recorded this solve (signed-in only). */
   submitted: boolean;
+  /** The server definitively refused this solve (4xx other than 401): don't re-POST. */
+  submitError?: string | null;
 }
 
 const storageKey = (day: string, owner: string) => `24game.puzzle.${day}.${owner}`;
@@ -56,10 +59,13 @@ function saveLocal(day: string, owner: string, value: LocalPuzzle): void {
  */
 function loadFor(day: string, owner: string): LocalPuzzle | null {
   const own = loadLocal(day, owner);
-  if (owner === 'guest' || own) return own;
+  if (owner === 'guest') return own;
   const guest = loadLocal(day, 'guest');
-  if (!guest) return null;
-  const claimed = { ...guest, submitted: false };
+  // Only a guest run with a solve or a start is worth claiming.
+  if (!guest || (!guest.solved && !guest.startedAt)) return own;
+  // Keep the account's own copy unless the guest solved and the account hasn't.
+  if (own && !(guest.solved && !own.solved)) return own;
+  const claimed: LocalPuzzle = { ...guest, submitted: false, submitError: null };
   saveLocal(day, owner, claimed);
   try {
     localStorage.removeItem(storageKey(day, 'guest'));
@@ -138,16 +144,38 @@ export function Daily({ auth, onExit, onSignIn }: Props) {
   const owner = auth.user?.id ?? 'guest';
   const signedIn = Boolean(auth.user && auth.token);
 
-  const loadPuzzle = useCallback(async () => {
-    setLoadError(null);
-    const res = await apiGet<DailyPuzzleView>('/api/daily/puzzle');
-    if (res.ok) setPuzzle(res.data);
-    else setLoadError('Today’s puzzle didn’t load. Check your connection and try again.');
-  }, []);
+  const token = auth.token;
+  const loadSeq = useRef(0);
+  const [newDayOut, setNewDayOut] = useState(false);
+  const [solvedNow, setSolvedNow] = useState(false);
 
+  // Fetched with the token so the server starts this account's clock.
+  const loadPuzzle = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    setLoadError(null);
+    const res = await apiGet<DailyPuzzleView>('/api/daily/puzzle', token);
+    if (seq !== loadSeq.current) return;
+    if (res.ok) {
+      setPuzzle(res.data);
+      setNewDayOut(false);
+    } else setLoadError('Today’s puzzle didn’t load. Check your connection and try again.');
+  }, [token]);
+
+  // Wait for auth, then (re)fetch whenever the signed-in account changes.
   useEffect(() => {
+    if (auth.loading) return;
     void loadPuzzle();
-  }, [loadPuzzle]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.loading, owner]);
+
+  // Midnight UTC while the page is open: offer today's puzzle, don't swap it in.
+  useEffect(() => {
+    if (!puzzle) return;
+    const check = () => setNewDayOut(dailyKey() !== puzzle.day);
+    check();
+    const id = window.setInterval(check, 30_000);
+    return () => window.clearInterval(id);
+  }, [puzzle]);
 
   const date = puzzle
     ? new Date(`${puzzle.day}T00:00:00Z`).toLocaleDateString(undefined, {
@@ -186,14 +214,25 @@ export function Daily({ auth, onExit, onSignIn }: Props) {
       ) : !puzzle || auth.loading ? (
         <p className="pt-10 text-center text-muted" role="status">Loading today’s puzzle…</p>
       ) : (
-        <PuzzleGame
-          key={`${puzzle.day}.${owner}`}
-          puzzle={puzzle}
-          owner={owner}
-          signedIn={signedIn}
-          token={auth.token}
-          onSignIn={onSignIn}
-        />
+        <>
+          {newDayOut && !solvedNow && (
+            <div className="panel flex items-center justify-between gap-3 p-3" role="status">
+              <p className="text-sm">A new puzzle is out.</p>
+              <button type="button" className="btn-secondary h-11 px-4 text-sm" onClick={() => void loadPuzzle()}>
+                Load today’s puzzle
+              </button>
+            </div>
+          )}
+          <PuzzleGame
+            key={`${puzzle.day}.${owner}`}
+            puzzle={puzzle}
+            owner={owner}
+            signedIn={signedIn}
+            token={auth.token}
+            onSignIn={onSignIn}
+            onSolvedChange={setSolvedNow}
+          />
+        </>
       )}
     </div>
   );
@@ -207,9 +246,10 @@ interface GameProps {
   signedIn: boolean;
   token: string | null;
   onSignIn: () => void;
+  onSolvedChange: (solved: boolean) => void;
 }
 
-function PuzzleGame({ puzzle, owner, signedIn, token, onSignIn }: GameProps) {
+function PuzzleGame({ puzzle, owner, signedIn, token, onSignIn, onSolvedChange }: GameProps) {
   const [local, setLocal] = useState<LocalPuzzle>(() => {
     const stored = loadFor(puzzle.day, owner);
     if (stored) return stored;
@@ -226,6 +266,9 @@ function PuzzleGame({ puzzle, owner, signedIn, token, onSignIn }: GameProps) {
     [puzzle.day, owner],
   );
 
+  const isSolved = Boolean(local.solved);
+  useEffect(() => onSolvedChange(isSolved), [isSolved, onSolvedChange]);
+
   if (local.solved) {
     return (
       <Solved
@@ -235,7 +278,15 @@ function PuzzleGame({ puzzle, owner, signedIn, token, onSignIn }: GameProps) {
         signedIn={signedIn}
         token={token}
         onSignIn={onSignIn}
-        onSubmitted={() => update({ ...local, submitted: true })}
+        onSubmitted={(timeMs) =>
+          update({
+            ...local,
+            solved: local.solved && timeMs !== undefined ? { ...local.solved, timeMs } : local.solved,
+            submitted: true,
+            submitError: null,
+          })
+        }
+        onSubmitError={(message) => update({ ...local, submitError: message })}
       />
     );
   }
@@ -312,11 +363,9 @@ function Play({
         columns={3}
       />
 
-      {missed && finalCard && (
-        <p role="status" className="text-center font-medium">
-          That makes {finalCard.label} — not {puzzle.target}. Try again.
-        </p>
-      )}
+      <p role="status" aria-live="polite" className="text-center font-medium empty:hidden">
+        {missed && finalCard ? `That makes ${finalCard.label} — not ${puzzle.target}. Try again.` : ''}
+      </p>
 
       <div className="grid grid-cols-2 gap-3">
         <button
@@ -355,6 +404,7 @@ function Solved({
   token,
   onSignIn,
   onSubmitted,
+  onSubmitError,
 }: {
   puzzle: DailyPuzzleView;
   local: LocalPuzzle;
@@ -362,35 +412,59 @@ function Solved({
   signedIn: boolean;
   token: string | null;
   onSignIn: () => void;
-  onSubmitted: () => void;
+  onSubmitted: (serverTimeMs: number | undefined) => void;
+  onSubmitError: (message: string) => void;
 }) {
   const [state, setState] = useState<StatsState>({ kind: 'idle' });
   const [copied, setCopied] = useState(false);
   const started = useRef(false);
 
+  // A sign-in problem or a definitive refusal; the curve still shows (estimate).
+  const [submitNote, setSubmitNote] = useState<{ kind: 'auth' } | { kind: 'refused'; message: string } | null>(
+    local.submitError ? { kind: 'refused', message: local.submitError } : null,
+  );
+
   useEffect(() => {
     if (started.current) return;
     started.current = true;
     setState({ kind: 'loading' });
+    const statsPath = `/api/daily/stats?day=${encodeURIComponent(puzzle.day)}`;
+    const showStats = (res: Awaited<ReturnType<typeof apiGet<DailyStatsView>>>) => {
+      if (res.ok) setState({ kind: 'ready', stats: res.data });
+      else if (res.status === 503) setState({ kind: 'unavailable' });
+      else setState({ kind: 'error', message: res.error });
+    };
     void (async () => {
-      const res =
-        signedIn && !local.submitted
-          ? await apiPost<DailyStatsView>(
-              '/api/daily/solve',
-              { day: puzzle.day, steps: solved.steps, timeMs: solved.timeMs },
-              token,
-            )
-          : await apiGet<DailyStatsView>('/api/daily/stats', token);
+      const shouldPost = signedIn && !local.submitted && !local.submitError;
+      if (!shouldPost) {
+        showStats(await apiGet<DailyStatsView>(statsPath, token));
+        return;
+      }
+      const res = await apiPost<DailyStatsView>(
+        '/api/daily/solve',
+        { day: puzzle.day, steps: solved.steps, timeMs: solved.timeMs },
+        token,
+      );
       if (res.ok) {
-        if (signedIn && !local.submitted) onSubmitted();
+        onSubmitted(res.data.mine?.timeMs);
         setState({ kind: 'ready', stats: res.data });
+        return;
+      }
+      if (res.status === 401) {
+        // Session expired: keep everything, ask to sign in again (retries next mount).
+        setSubmitNote({ kind: 'auth' });
+      } else if (res.status >= 400 && res.status < 500) {
+        // Definitive refusal: remember it so we don't re-POST on every visit.
+        onSubmitError(res.error);
+        setSubmitNote({ kind: 'refused', message: res.error });
       } else if (res.status === 503) {
         setState({ kind: 'unavailable' });
-      } else {
-        setState({ kind: 'error', message: res.error });
+        return;
       }
+      // 5xx / network errors simply retry on the next mount.
+      showStats(await apiGet<DailyStatsView>(statsPath, token));
     })();
-  }, [signedIn, local.submitted, puzzle.day, solved, token, onSubmitted]);
+  }, [signedIn, local.submitted, local.submitError, puzzle.day, solved, token, onSubmitted, onSubmitError]);
 
   const stats = state.kind === 'ready' ? state.stats : null;
   // The server's own number counts this solve; a guest gets an estimate.
@@ -443,6 +517,18 @@ function Solved({
           </>
         ) : null}
       </section>
+
+      {submitNote?.kind === 'auth' && (
+        <div className="flex flex-col gap-2 text-center" role="alert">
+          <p className="text-sm">Sign in again to be counted.</p>
+          <button type="button" className="btn-secondary h-12" onClick={onSignIn}>
+            Sign in
+          </button>
+        </div>
+      )}
+      {submitNote?.kind === 'refused' && (
+        <p className="text-center text-sm text-bad" role="alert">{submitNote.message}</p>
+      )}
 
       {!signedIn && (
         <div className="flex flex-col gap-2 text-center">

@@ -13,7 +13,6 @@ import {
   validateSteps,
   type Card,
   type CombineStep,
-  type DailyHandRecord,
   type RuleSet,
   type TableCard,
   type TimerKind,
@@ -21,6 +20,13 @@ import {
   type ValidationError,
 } from '@24game/shared';
 import { describeValidationError } from '@24game/shared';
+
+/** What a player did on one hand of a fixed deck. */
+export interface DailyHandRecord {
+  readonly steps: readonly CombineStep[] | null;
+  readonly noSolution: boolean;
+  readonly ms: number;
+}
 
 export type TrainingPhase = 'open' | 'answering' | 'result' | 'done';
 

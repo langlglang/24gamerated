@@ -21,6 +21,8 @@ const WAYS_BANDS: readonly (readonly [number, number])[] = [
   [1, 12],
   [1, 30],
   [1, 200],
+  // Last resort so generation never throws: any reachable 3-digit target.
+  [1, Number.POSITIVE_INFINITY],
 ];
 /** Faster than this is not a human solve; the server rejects it. */
 export const MIN_SOLVE_MS = 3_000;
@@ -105,7 +107,19 @@ export function reachableValues(values: readonly number[]): Map<number, Reach> {
   return memo[full]!;
 }
 
+/** Only the last few days are ever asked for (today, yesterday, tomorrow's warm-up). */
+const CACHE_LIMIT = 3;
 const cache = new Map<string, DailyPuzzle>();
+
+function remember(day: string, puzzle: DailyPuzzle): void {
+  cache.set(day, puzzle);
+  while (cache.size > CACHE_LIMIT) {
+    // Evict the oldest day (keys are ISO dates, so string order is date order).
+    let oldest: string | null = null;
+    for (const k of cache.keys()) if (oldest === null || k < oldest) oldest = k;
+    cache.delete(oldest!);
+  }
+}
 
 /** The puzzle for a UTC day ("YYYY-MM-DD"). Deterministic; cached. */
 export function dailyPuzzle(day: string): DailyPuzzle {
@@ -136,7 +150,7 @@ export function dailyPuzzle(day: string): DailyPuzzle {
         target: Math.round(pick.v),
         ways: pick.n,
       };
-      cache.set(day, puzzle);
+      remember(day, puzzle);
       return puzzle;
     }
   }
@@ -196,8 +210,15 @@ export interface DailyStatsView {
  */
 export function bucketSolveTimes(times: readonly number[], bucketCount = 24): SolveTimeBucket[] {
   if (times.length === 0) return [];
-  const lo = Math.max(MIN_SOLVE_MS, Math.min(...times));
-  const hi = Math.max(lo * 1.5, Math.max(...times));
+  // A loop, not Math.min(...times): spreading ~100k values overflows the stack.
+  let min = Infinity;
+  let max = -Infinity;
+  for (const t of times) {
+    if (t < min) min = t;
+    if (t > max) max = t;
+  }
+  const lo = Math.max(MIN_SOLVE_MS, min);
+  const hi = Math.max(lo * 1.5, max);
   const logLo = Math.log(lo);
   const step = (Math.log(hi) - logLo) / bucketCount;
   const edges = Array.from({ length: bucketCount + 1 }, (_, i) => Math.round(Math.exp(logLo + i * step)));

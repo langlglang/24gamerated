@@ -12,7 +12,7 @@ async function api(method, path, body, token) {
     body: body ? JSON.stringify(body) : undefined,
   });
   let json = null; try { json = await r.json(); } catch {}
-  return { status: r.status, json };
+  return { status: r.status, json, headers: r.headers.get('cache-control') };
 }
 
 function solve(puzzle) {
@@ -41,15 +41,16 @@ const steps = solve(dailyPuzzle(day));
 ok(!!steps, 'brute-force found a solution');
 
 const tag = Date.now();
+let r;
 const reg = async (name, domain = 'example.com') => {
   const r = await api('POST', '/api/auth/register', { email: `${name}${tag}@${domain}`, username: `${name}${tag}`.slice(0, 20), password: 'pw-local-123456' });
   if (r.status >= 300) console.log(r);
   return r.json.token;
 };
-const [a, b, c, t] = [await reg('pa'), await reg('pb'), await reg('pc'), await reg('pt', 'example.test')];
+const [a, b, c, t, s] = [await reg('pa'), await reg('pb'), await reg('pc'), await reg('pt', 'example.test'), await reg('ps')];
 
 const wrong = [...steps]; wrong[wrong.length - 1] = { ...wrong.at(-1), op: wrong.at(-1).op === '+' ? '-' : '+' };
-let r = await api('POST', '/api/daily/solve', { day, steps: wrong, timeMs: 10000 }, a);
+r = await api('POST', '/api/daily/solve', { day, steps: wrong, timeMs: 10000 }, a);
 ok(r.status === 400, `wrong solution -> 400 (${r.json?.error})`);
 r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 1000 }, a);
 ok(r.status === 400, `timeMs 1000 -> 400 (${r.json?.error})`);
@@ -64,8 +65,8 @@ r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 20000 }, b);
 ok(r.status === 200 && r.json.solvers === 2 && r.json.mine.fasterThanPct === 0 && r.json.medianMs === 15000, `b 20s: pct ${r.json.mine?.fasterThanPct} median ${r.json.medianMs}`);
 r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 40000 }, c);
 ok(r.status === 200 && r.json.solvers === 3 && r.json.mine.fasterThanPct === 0 && r.json.medianMs === 20000, `c 40s: pct ${r.json.mine?.fasterThanPct} median ${r.json.medianMs}`);
-r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 5000 }, t);
-ok(r.status === 200 && r.json.solvers === 3 && r.json.mine.timeMs === 5000, `test account excluded from solvers (${r.json.solvers}), own pct ${r.json.mine?.fasterThanPct}`);
+r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 20000 }, t);
+ok(r.status === 200 && r.json.solvers === 3 && r.json.mine.timeMs === 20000 && r.json.mine.fasterThanPct === 33, `test account excluded from solvers (${r.json.solvers}), own pct ${r.json.mine?.fasterThanPct}`);
 r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 3500 }, a);
 ok(r.status === 200 && r.json.mine.timeMs === 10000, 'repeat submit keeps first time');
 
@@ -80,6 +81,20 @@ r = await api('GET', '/api/daily/stats', null, 'garbage');
 ok(r.status === 200 && r.json.mine === null, 'bad token stats -> 200 mine null');
 r = await api('GET', '/api/daily/stats?day=2020-01-01');
 ok(r.status === 400, 'stats old day -> 400');
+
+// Server-measured time: a signed-in puzzle fetch starts the clock; the stored
+// time is server elapsed, not the (smaller) claimed timeMs.
+const t0 = Date.now();
+const pr = await api('GET', '/api/daily/puzzle', null, s);
+ok(pr.status === 200 && /no-store/.test(pr.headers ?? ''), 'puzzle with token -> 200');
+r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 3000 }, s);
+ok(r.status === 400, `solve right after opening (server elapsed < 3s) -> 400 (${r.json?.error})`);
+await api('GET', '/api/daily/puzzle', null, s); // refetch must not reset the clock
+await new Promise((res) => setTimeout(res, 3300));
+r = await api('POST', '/api/daily/solve', { day, steps, timeMs: 3000 }, s);
+const wall = Date.now() - t0;
+ok(r.status === 200 && r.json.mine.timeMs >= 3300 && r.json.mine.timeMs <= wall + 200,
+  `claimed 3000 but stored server elapsed ${r.json?.mine?.timeMs} (wall ${wall})`);
 
 for (const [m, p] of [['GET', '/api/daily/today'], ['POST', '/api/daily/submit'], ['GET', '/api/daily/leaderboard'], ['POST', '/api/friends'], ['DELETE', '/api/friends/00000000-0000-0000-0000-000000000000']]) {
   r = await api(m, p, m === 'GET' ? null : {}, a);

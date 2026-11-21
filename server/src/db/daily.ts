@@ -20,12 +20,37 @@ export async function saveDailySolve(
   return row !== null;
 }
 
-export async function getDailySolveTime(userId: string, day: string): Promise<number | null> {
-  const row = await queryOne<{ time_ms: number }>(
-    `SELECT time_ms FROM daily_solves WHERE user_id = $1 AND day = $2`,
+/** The player's stored time for a day, plus whether they are a test account (left out of the pool). */
+export async function getDailySolve(
+  userId: string,
+  day: string,
+): Promise<{ timeMs: number; isTestAccount: boolean } | null> {
+  const row = await queryOne<{ time_ms: number; is_test: boolean }>(
+    `SELECT d.time_ms, (u.email_lower LIKE '%@example.test') AS is_test
+       FROM daily_solves d
+       JOIN users u ON u.id = d.user_id
+      WHERE d.user_id = $1 AND d.day = $2`,
     [userId, day],
   );
-  return row ? row.time_ms : null;
+  return row ? { timeMs: row.time_ms, isTestAccount: row.is_test } : null;
+}
+
+/** Note when a signed-in player first opened a day's puzzle. Later opens keep the first time. */
+export async function recordDailyStart(userId: string, day: string): Promise<void> {
+  await query(
+    `INSERT INTO daily_starts (user_id, day) VALUES ($1, $2) ON CONFLICT (user_id, day) DO NOTHING`,
+    [userId, day],
+  );
+}
+
+/** Milliseconds since the player first opened the day's puzzle, by the database clock; null if never recorded. */
+export async function dailyElapsedMs(userId: string, day: string): Promise<number | null> {
+  const row = await queryOne<{ elapsed_ms: string | number }>(
+    `SELECT EXTRACT(EPOCH FROM (now() - started_at)) * 1000 AS elapsed_ms
+       FROM daily_starts WHERE user_id = $1 AND day = $2`,
+    [userId, day],
+  );
+  return row ? Math.round(Number(row.elapsed_ms)) : null;
 }
 
 /**
