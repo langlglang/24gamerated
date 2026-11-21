@@ -502,14 +502,15 @@ function Solved({
         ) : stats ? (
           <>
             <SolveCurve buckets={stats.buckets} timeMs={mineTime} />
-            <p className="text-center">
-              {pct !== null && (
-                <>
-                  Faster than <strong>{pct}%</strong> of{' '}
-                </>
-              )}
-              {stats.solvers.toLocaleString()} {stats.solvers === 1 ? 'player' : 'players'}
-              {!counted && pct !== null && ' (estimate)'}
+            {pct !== null && (
+              <p className="text-center text-lg">
+                Faster than <strong>{pct}%</strong> of players
+                {!counted && ' (estimate)'}
+              </p>
+            )}
+            <p className="text-center text-sm text-muted">
+              {stats.solvers.toLocaleString()} {stats.solvers === 1 ? 'player has' : 'players have'} solved
+              today’s puzzle
             </p>
             {stats.medianMs !== null && (
               <p className="text-center text-sm text-muted">Median {formatDailyTime(stats.medianMs)}</p>
