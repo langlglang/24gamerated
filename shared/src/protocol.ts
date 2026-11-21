@@ -61,6 +61,11 @@ export interface MatchResultView {
   readonly scores: Readonly<Record<ScoreKey, number>>;
   readonly winners: readonly ScoreKey[];
   readonly wentToTiebreak: boolean;
+  /**
+   * Rated only: the player id of whoever left the match. They lose by
+   * forfeit and `winners` is the player who stayed, whatever `scores` say.
+   */
+  readonly forfeitedBy: string | null;
 }
 
 /** Running tally across every match played in this room. */

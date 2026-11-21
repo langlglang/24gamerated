@@ -270,3 +270,85 @@ describe('activity and ghost seats', () => {
     expect(room.finished).toBe(true);
   });
 });
+
+describe('rated forfeits', () => {
+  type Outcome = Parameters<NonNullable<RoomEvents['onRatedMatchComplete']>>[1];
+  function ratedRoom(): { room: Room; outcomes: Outcome[]; ev: ReturnType<typeof events> } {
+    const ev = events();
+    const outcomes: Outcome[] = [];
+    const room = new Room(
+      'ABCDEF',
+      { id: 'a', name: 'A', socketId: 's-a' },
+      'ffa',
+      RULES,
+      { ...ev, onRatedMatchComplete: (_r, o) => outcomes.push(o) },
+      'ranked',
+    );
+    room.join({ id: 'b', name: 'B', socketId: 's-b' });
+    room.start('a');
+    return { room, outcomes, ev };
+  }
+
+  it('an explicit leave loses at once, even when ahead', () => {
+    const { room, outcomes } = ratedRoom();
+    win(room, 'a');
+    vi.advanceTimersByTime(HAND_RESULT_DISPLAY_MS);
+    room.disconnect('s-a', { leaving: true });
+    expect(room.phase).toBe('match-result');
+    expect(room.matchResult?.winners).toEqual(['b']);
+    expect(room.matchResult?.forfeitedBy).toBe('a');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ playerAId: 'a', playerBId: 'b', scoreA: 1, scoreB: 0, forfeitedBy: 'a' });
+  });
+
+  it('not coming back within the grace loses; coming back resumes', () => {
+    const { room, outcomes } = ratedRoom();
+    room.disconnect('s-b');
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS - 1000);
+    room.reconnect('b', 's-b2');
+    expect(room.phase).toBe('open');
+    expect(outcomes).toHaveLength(0);
+    room.disconnect('s-b2');
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS);
+    expect(room.phase).toBe('match-result');
+    expect(room.matchResult?.winners).toEqual(['a']);
+    expect(outcomes[0]?.forfeitedBy).toBe('b');
+    expect(room.closed).toBe(false); // the stayer sees the result screen
+  });
+
+  it('records nothing when both players are gone', () => {
+    const { room, outcomes } = ratedRoom();
+    room.disconnect('s-a');
+    room.disconnect('s-b');
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS);
+    expect(room.closed).toBe(true);
+    expect(outcomes).toHaveLength(0);
+  });
+
+  it('a leave while the opponent is already away is a no contest', () => {
+    const { room, outcomes } = ratedRoom();
+    room.disconnect('s-b');
+    room.disconnect('s-a', { leaving: true });
+    expect(room.closed).toBe(true);
+    expect(outcomes).toHaveLength(0);
+  });
+
+  it('a normal finish is not a forfeit', () => {
+    const { room, outcomes } = ratedRoom();
+    for (let h = 0; h < 13; h++) {
+      win(room, 'b');
+      vi.advanceTimersByTime(HAND_RESULT_DISPLAY_MS);
+    }
+    expect(outcomes[0]?.forfeitedBy).toBeNull();
+    expect(room.matchResult?.forfeitedBy).toBeNull();
+    // Leaving the result screen changes nothing.
+    room.disconnect('s-a', { leaving: true });
+    expect(outcomes).toHaveLength(1);
+  });
+
+  it('guest rooms never forfeit', () => {
+    const room = startedRoom(['a', 'b']);
+    room.disconnect('s-a', { leaving: true });
+    expect(room.phase).toBe('paused');
+  });
+});

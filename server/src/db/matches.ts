@@ -10,6 +10,8 @@ export interface RecordMatchInput {
   scoreA: number;
   scoreB: number;
   wentToTiebreak: boolean;
+  /** The player who left the match; they lose whatever the score. */
+  forfeitedBy?: string | null;
 }
 
 export interface RecordedMatch {
@@ -43,7 +45,17 @@ export class MissingPlayerError extends Error {}
  */
 export async function recordRatedMatch(input: RecordMatchInput): Promise<RecordedMatch> {
   const { kind, playerAId, playerBId, scoreA, scoreB, wentToTiebreak } = input;
-  const result: MatchScore = scoreA > scoreB ? 1 : scoreA < scoreB ? 0 : 0.5;
+  const forfeitedBy = input.forfeitedBy ?? null;
+  if (forfeitedBy !== null && forfeitedBy !== playerAId && forfeitedBy !== playerBId) {
+    throw new Error('forfeitedBy must be one of the two players');
+  }
+  // A forfeit is a loss for whoever left, even if they were ahead.
+  const result: MatchScore =
+    forfeitedBy === playerAId ? 0
+    : forfeitedBy === playerBId ? 1
+    : scoreA > scoreB ? 1
+    : scoreA < scoreB ? 0
+    : 0.5;
   const winnerId = result === 1 ? playerAId : result === 0 ? playerBId : null;
 
   return withTransaction(async (client) => {
@@ -70,8 +82,8 @@ export async function recordRatedMatch(input: RecordMatchInput): Promise<Recorde
     const inserted = await client.query<{ id: string }>(
       `INSERT INTO matches
          (kind, player_a, player_b, score_a, score_b, winner,
-          rating_a_before, rating_b_before, rating_a_after, rating_b_after, went_to_tiebreak)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          rating_a_before, rating_b_before, rating_a_after, rating_b_after, went_to_tiebreak, forfeit)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING id`,
       [
         kind,
@@ -85,6 +97,7 @@ export async function recordRatedMatch(input: RecordMatchInput): Promise<Recorde
         outcome.a.after,
         outcome.b.after,
         wentToTiebreak,
+        forfeitedBy !== null,
       ],
     );
 
@@ -127,6 +140,7 @@ export interface MatchHistoryRow {
   ratingAfter: number;
   delta: number;
   result: 'win' | 'loss' | 'draw';
+  forfeit: boolean;
 }
 
 interface RawHistoryRow {
@@ -139,6 +153,7 @@ interface RawHistoryRow {
   rating_before: number;
   rating_after: number;
   winner: string | null;
+  forfeit: boolean;
 }
 
 /** A player's recent rated games, most recent first. */
@@ -146,7 +161,7 @@ export async function matchHistory(userId: string, limit = 10): Promise<MatchHis
   // The player can be on either side of a match, so normalise both cases into
   // "you" and "them" here rather than making the client work it out.
   const rows = await query<RawHistoryRow>(
-    `SELECT m.id, m.kind, m.played_at, m.winner,
+    `SELECT m.id, m.kind, m.played_at, m.winner, m.forfeit,
             CASE WHEN m.player_a = $1 THEN ub.username    ELSE ua.username    END AS opponent,
             CASE WHEN m.player_a = $1 THEN m.score_a       ELSE m.score_b       END AS your_score,
             CASE WHEN m.player_a = $1 THEN m.score_b       ELSE m.score_a       END AS their_score,
@@ -173,5 +188,6 @@ export async function matchHistory(userId: string, limit = 10): Promise<MatchHis
     ratingAfter: r.rating_after,
     delta: r.rating_after - r.rating_before,
     result: r.winner === null ? 'draw' : r.winner === userId ? 'win' : 'loss',
+    forfeit: r.forfeit,
   }));
 }

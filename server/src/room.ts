@@ -82,6 +82,8 @@ export interface RatedMatchOutcome {
   scoreA: number;
   scoreB: number;
   wentToTiebreak: boolean;
+  /** Player id of whoever left a rated match (and so lost it), else null. */
+  forfeitedBy: string | null;
 }
 
 export type ActionResult = { ok: true } | { ok: false; error: ActionRejection };
@@ -172,6 +174,8 @@ export class Room {
   private seriesWins: Record<ScoreKey, number> = emptyScores();
   private matchesPlayed = 0;
   isTiebreak = false;
+  /** Rated only: the player who left the match and lost it by forfeit. */
+  private forfeitedBy: string | null = null;
   lastActivity = Date.now();
   closed = false;
 
@@ -350,6 +354,7 @@ export class Room {
     this.hands = dealMatch();
     this.handIndex = -1;
     this.isTiebreak = false;
+    this.forfeitedBy = null;
     this.matchResult = null;
     this.lastResult = null;
     this.dealNextHand();
@@ -539,10 +544,14 @@ export class Room {
   private finishMatch(): void {
     this.clearTimer();
     this.phase = 'match-result';
-    const winners = leaders(this.scores);
-    // Sudden death only ends once the tie at the top breaks, so there is
-    // normally exactly one winner. Awarding every leader keeps the tally
+    // A forfeit is won by whoever stayed, whatever the score. Otherwise
+    // sudden death only ends once the tie at the top breaks, so there is
+    // normally exactly one winner; awarding every leader keeps the tally
     // honest if a match ever ends tied for another reason.
+    const forfeitedBy = this.forfeitedBy;
+    const winners = forfeitedBy
+      ? this.players.filter((p) => p.id !== forfeitedBy).map((p) => p.id)
+      : leaders(this.scores);
     for (const key of winners) {
       this.seriesWins[key] = (this.seriesWins[key] ?? 0) + 1;
     }
@@ -551,6 +560,7 @@ export class Room {
       scores: this.scores,
       winners,
       wentToTiebreak: this.isTiebreak,
+      forfeitedBy,
     };
 
     if (this.rated) {
@@ -564,6 +574,7 @@ export class Room {
           scoreA: this.scores[a.id] ?? 0,
           scoreB: this.scores[b.id] ?? 0,
           wentToTiebreak: this.isTiebreak,
+          forfeitedBy,
         });
       }
     }
@@ -619,6 +630,14 @@ export class Room {
     // room cannot resume or reach a host-only phase until every seat is back,
     // and it closes if this one never returns.
 
+    // Rated: leaving on purpose is a forfeit loss, right away. If the
+    // opponent is gone too there is nobody to award it to: no contest.
+    if (this.rated && opts.leaving) {
+      if (this.players.some((p) => p.id !== player.id && p.connected)) this.forfeit(player.id);
+      else this.close('both players left; the match does not count');
+      return;
+    }
+
     if (this.phase === 'answering' && this.activePlayerId === player.id) {
       // Dropping mid-answer counts as a failed attempt, so disconnecting is
       // never a way to escape a buzz that is going badly.
@@ -637,8 +656,34 @@ export class Room {
 
     if (this.phase !== 'paused') this.pause();
 
-    this.setDisconnectTimer(player.id, () => this.close(`${player.name} did not reconnect`));
+    this.setDisconnectTimer(player.id, () => {
+      if (!this.rated) {
+        this.close(`${player.name} did not reconnect`);
+      } else if (this.players.some((p) => p.id !== player.id && p.connected)) {
+        // Rated: not back within the grace is a forfeit loss.
+        this.forfeit(player.id);
+      } else {
+        this.close('both players left; the match does not count');
+      }
+    });
     this.change();
+  }
+
+  /**
+   * End a rated match because `leaverId` left it: they lose, the player who
+   * stayed wins, and the scores so far are what gets recorded.
+   */
+  private forfeit(leaverId: string): void {
+    if (this.closed || !this.rated || this.phase === 'match-result' || this.phase === 'lobby') return;
+    for (const handle of this.disconnectTimers.values()) clearTimeout(handle);
+    this.disconnectTimers.clear();
+    this.clearTimer();
+    this.pausedAnswer = null;
+    this.phaseBeforePause = null;
+    this.activePlayerId = null;
+    this.answerSteps = [];
+    this.forfeitedBy = leaverId;
+    this.finishMatch();
   }
 
   /** Freeze the hand, remembering what is needed to pick it up again. */

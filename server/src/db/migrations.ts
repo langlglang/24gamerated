@@ -145,7 +145,7 @@ export const MIGRATIONS: readonly Migration[] = [
     `,
   },
   {
-    name: '006_rated_one_pending_challenge',
+    name: '006_rated_challenges_and_forfeits',
     sql: `
       -- At most one pending challenge per (from, to) pair, so two sends racing
       -- each other cannot both insert. Older duplicates are expired first,
@@ -162,6 +162,9 @@ export const MIGRATIONS: readonly Migration[] = [
 
       CREATE UNIQUE INDEX IF NOT EXISTS challenges_one_pending_per_pair
         ON challenges (from_user, to_user) WHERE status = 'pending';
+
+      -- A rated match a player left: they lose by forfeit, whatever the score.
+      ALTER TABLE matches ADD COLUMN IF NOT EXISTS forfeit boolean NOT NULL DEFAULT false;
     `,
   },
 ];

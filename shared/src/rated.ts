@@ -60,6 +60,11 @@ export interface RatedResultView {
   readonly matchId: string;
   readonly kind: RatedKind;
   readonly result: 'win' | 'loss' | 'draw';
+  /**
+   * The match ended because a player left it. With `result` 'win' the
+   * opponent left; with 'loss' you did.
+   */
+  readonly forfeit: boolean;
   readonly you: RatingChangeView;
   readonly opponent: RatingChangeView & { readonly username: string };
 }
@@ -75,6 +80,8 @@ export interface MatchHistoryEntryView {
   readonly ratingAfter: number;
   readonly delta: number;
   readonly result: 'win' | 'loss' | 'draw';
+  /** Ended because a player left (see RatedResultView.forfeit). */
+  readonly forfeit: boolean;
 }
 
 export type RatedRejection =
