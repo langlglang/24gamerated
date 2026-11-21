@@ -100,6 +100,30 @@ consent to putting their rating up again. The series tally is a guest-room featu
 
 ---
 
+## Daily 24
+
+One deck a day, the same for everyone, played solo like Wordle. It's for playing against a friend
+day after day.
+
+- **Same deck everywhere.** The 13 hands are derived from the UTC date (`dealDaily` in
+  `shared/src/daily.ts`, a seeded shuffle), so the client deals them without asking the server. A
+  new deck arrives at midnight UTC.
+- **One try a day.** You play with the same 5 s start and 10 s answer clocks as practice. Fixed
+  rules: fractions and negatives ON.
+- **Score.** Hands right (solved, or a correct "no solution" call), then total time as the
+  tiebreak. The server replays every submitted combine through the validator against that day's
+  deck, so claimed solutions are checked. Times are client-reported and only break ties.
+- **No re-rolls.** Progress is saved in `localStorage` (per account, or as a guest) so a refresh
+  resumes. A hand that was dealt but not finished counts as missed.
+- **Friends.** Signed-in players follow friends by username. The daily screen shows each friend's
+  result for today (hidden until you've played yourself) and your all-time record against them
+  over every day you both played.
+- **Guests** can play and get a share line. When they sign in, the run is saved to their account.
+
+API (all need an account): `GET /api/daily/today`, `POST /api/daily/submit` (today's or yesterday's
+deck only; the first submission stands), `POST /api/friends`, `DELETE /api/friends/:userId`.
+Tables: `daily_results` and `follows` (migration `002_daily_and_friends`).
+
 ## Layout
 
 ```

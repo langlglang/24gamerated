@@ -13,6 +13,7 @@ import {
   validateSteps,
   type Card,
   type CombineStep,
+  type DailyHandRecord,
   type RuleSet,
   type TableCard,
   type TimerKind,
@@ -41,6 +42,18 @@ export interface TrainingResult {
   ownSolution: boolean;
   note: string;
   correct: boolean;
+}
+
+/** Options for a fixed deck (the daily) instead of a fresh shuffle. */
+export interface SoloOptions {
+  /** Deal these hands instead of shuffling. */
+  hands?: Card[][];
+  /** Hands already played (resuming a daily after a refresh). */
+  completed?: readonly DailyHandRecord[];
+  /** Called as each hand is dealt, before the player can act. */
+  onHandStart?: (index: number) => void;
+  /** Called once per hand as it ends, in order. */
+  onHandEnd?: (index: number, record: DailyHandRecord) => void;
 }
 
 export interface TrainingState {
@@ -75,6 +88,10 @@ export class TrainingGame {
   private errorNonce = 0;
   private combineError: { message: string; nonce: number } | null = null;
   private lastResult: TrainingResult | null = null;
+  private handStartedAt = 0;
+  private calledNoSolution = false;
+  /** Steps of a buzz that reached one card this hand, right or wrong. */
+  private finishedSteps: CombineStep[] | null = null;
 
   stats: TrainingStats = {
     handsPlayed: 0,
@@ -87,8 +104,12 @@ export class TrainingGame {
 
   private listeners = new Set<() => void>();
 
-  constructor(private rules: RuleSet) {
-    this.hands = dealMatch();
+  constructor(
+    private rules: RuleSet,
+    private options: SoloOptions = {},
+  ) {
+    this.hands = options.hands ?? dealMatch();
+    this.handIndex = (options.completed?.length ?? 0) - 1;
     this.dealNext();
   }
 
@@ -132,6 +153,10 @@ export class TrainingGame {
     this.steps = [];
     this.combineError = null;
     this.lastResult = null;
+    this.calledNoSolution = false;
+    this.finishedSteps = null;
+    this.handStartedAt = Date.now();
+    this.options.onHandStart?.(this.handIndex);
     this.phase = 'open';
     this.setTimer('hand-idle', HAND_IDLE_TIMEOUT_MS, () =>
       this.endHand({ note: 'Time up — no attempt', correct: false }),
@@ -154,6 +179,7 @@ export class TrainingGame {
   callNoSolution(): void {
     if (this.phase !== 'open') return;
     this.stats.noSolutionCalls += 1;
+    this.calledNoSolution = true;
     const correct = !this.solve.solvable;
     if (correct) this.stats.noSolutionCorrect += 1;
     this.endHand({
@@ -180,6 +206,7 @@ export class TrainingGame {
     this.steps.push(step);
 
     if (this.table.length === 1) {
+      this.finishedSteps = this.steps.slice();
       const check = validateSteps(tableFromCards(this.cards), this.steps, this.rules);
       const elapsed = Date.now() - this.answerStartedAt;
       if (check.valid) {
@@ -203,6 +230,11 @@ export class TrainingGame {
   private endHand(outcome: { note: string; correct: boolean }): void {
     const own = outcome.correct ? expressionForSteps(this.cards, this.steps) : null;
     this.clearTimer();
+    this.options.onHandEnd?.(this.handIndex, {
+      steps: this.finishedSteps,
+      noSolution: this.calledNoSolution,
+      ms: Date.now() - this.handStartedAt,
+    });
     this.stats.handsPlayed += 1;
     this.phase = 'result';
     this.lastResult = {
@@ -263,9 +295,13 @@ export class TrainingGame {
   }
 }
 
-export function useTraining(rules: RuleSet): { game: TrainingGame; state: TrainingState } {
+export function useTraining(
+  rules: RuleSet,
+  options?: SoloOptions,
+): { game: TrainingGame; state: TrainingState } {
   const gameRef = useRef<TrainingGame | null>(null);
-  if (!gameRef.current) gameRef.current = new TrainingGame(rules);
+  // Options are read once: a game never changes deck mid-session.
+  if (!gameRef.current) gameRef.current = new TrainingGame(rules, options);
   const game = gameRef.current;
 
   const [state, setState] = useState<TrainingState>(() => game.snapshot());

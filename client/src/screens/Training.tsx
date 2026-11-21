@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { describeRules, type RuleSet } from '@24game/shared';
-import { CombineBoard } from '../components/CombineBoard.js';
-import { CountdownBar } from '../components/Countdown.js';
 import { RuleToggles } from '../components/RuleToggles.js';
+import { SoloBoard } from '../components/SoloBoard.js';
 import { useTraining } from '../training.js';
 
 function StatsPanel({
@@ -45,8 +44,6 @@ function StatsPanel({
 
 function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
   const { game, state } = useTraining(rules);
-  const isAnswering = state.phase === 'answering';
-  const canAct = state.phase === 'open';
 
   if (state.phase === 'done') {
     return (
@@ -64,85 +61,27 @@ function Arena({ rules, onExit }: { rules: RuleSet; onExit: () => void }) {
   }
 
   return (
-    <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 p-4">
-      <header className="flex items-baseline justify-between text-xs text-muted">
-        <button type="button" className="underline" onClick={onExit}>
-          Exit
-        </button>
-        <span>
-          Hand {state.handNumber} / {state.totalHands}
-        </span>
-        <span>{describeRules(rules)}</span>
-      </header>
-
-      <StatsPanel stats={state.stats} />
-
-      <div className="h-8">
-        <CountdownBar timer={state.timer} />
-      </div>
-
-      <div className="flex-1">
-        <CombineBoard
-          dealt={state.cards}
-          table={state.table}
-          interactive={isAnswering}
-          onCombine={(step) => game.combine(step)}
-          errorNonce={state.combineError?.nonce ?? 0}
-          errorMessage={state.combineError?.message ?? null}
-        />
-      </div>
-
-      <div className="space-y-2 pb-2">
-        <button
-          type="button"
-          className="btn-primary h-24 w-full text-3xl font-black"
-          disabled={!canAct}
-          onClick={() => game.buzz()}
-        >
-          BUZZ
-        </button>
-        <button
-          type="button"
-          className="btn-secondary w-full text-sm"
-          disabled={!canAct}
-          onClick={() => game.callNoSolution()}
-        >
-          No solution
-        </button>
-      </div>
-
-      {state.phase === 'result' && state.lastResult && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-paper/95 p-5">
-          <div className="panel w-full max-w-sm space-y-3 text-center">
-            <p
-              className={`text-2xl font-black ${
-                state.lastResult.correct ? 'text-good' : 'text-bad'
-              }`}
-            >
-              {state.lastResult.correct ? 'Correct' : 'Missed'}
-            </p>
-            <p className="text-sm text-ink">{state.lastResult.note}</p>
-            <div className="rounded-md bg-paper p-3">
-              {state.lastResult.solvable ? (
-                <>
-                  <p className="text-xs uppercase tracking-wide text-muted">
-                    {state.lastResult.ownSolution ? 'Your solution' : 'One solution'}
-                  </p>
-                  <p className="mt-1 break-words font-mono text-lg">
-                    {state.lastResult.solution} = 24
-                  </p>
-                </>
-              ) : (
-                <p className="font-semibold text-ink">This hand had no solution.</p>
-              )}
-            </div>
-            <button type="button" className="btn-secondary w-full" onClick={() => game.next()}>
-              Next hand
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+    <SoloBoard
+      game={game}
+      state={state}
+      header={
+        <header className="flex h-11 items-center justify-between border-b border-ink text-sm">
+          <button type="button" className="-ml-1 min-h-[44px] px-1 font-semibold underline" onClick={onExit}>
+            Exit
+          </button>
+          <span className="font-display text-xl font-extrabold">Practice</span>
+          <span className="font-semibold tabular-nums">
+            {state.handNumber}/{state.totalHands}
+          </span>
+        </header>
+      }
+      above={
+        <>
+          <StatsPanel stats={state.stats} />
+          <p className="-mt-2 text-center text-xs text-muted">{describeRules(rules)}</p>
+        </>
+      }
+    />
   );
 }
 

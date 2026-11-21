@@ -17,6 +17,7 @@ import { RoomManager } from './rooms.js';
 import type { RatedMatchOutcome, Room } from './room.js';
 import { Matchmaker } from './matchmaking.js';
 import { createAuthRouter } from './auth/routes.js';
+import { createDailyRouter } from './daily/routes.js';
 import { verifyToken } from './auth/tokens.js';
 import { isDatabaseConfigured, pingDatabase } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
@@ -547,6 +548,7 @@ io.on('connection', (socket) => {
 // ----------------------------------------------------------------- http layer
 
 app.use('/api', createAuthRouter());
+app.use('/api', createDailyRouter());
 
 app.get('/healthz', (_req, res) => {
   void (async () => {

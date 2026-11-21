@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Auth } from './screens/Auth.js';
+import { Daily } from './screens/Daily.js';
 import { Game } from './screens/Game.js';
 import { Home } from './screens/Home.js';
 import { Lobby } from './screens/Lobby.js';
@@ -8,12 +9,14 @@ import { Training } from './screens/Training.js';
 import { useAuth } from './useAuth.js';
 import { useGame } from './useGame.js';
 
-type Screen = 'home' | 'auth' | 'ranked' | 'training';
+type Screen = 'home' | 'auth' | 'ranked' | 'training' | 'daily';
 
 export default function App() {
   const auth = useAuth();
   const game = useGame(auth.token);
   const [screen, setScreen] = useState<Screen>('home');
+  /** Where to land after signing in. */
+  const [afterAuth, setAfterAuth] = useState<Screen>('ranked');
 
   // The socket is the authority on the player's record once connected, so a
   // rating change mid-session flows straight back into the auth cache.
@@ -30,6 +33,18 @@ export default function App() {
   }, [game.matchFound]);
 
   if (screen === 'training') return <Training onExit={() => setScreen('home')} />;
+  if (screen === 'daily' && !game.state) {
+    return (
+      <Daily
+        auth={auth}
+        onExit={() => setScreen('home')}
+        onSignIn={() => {
+          setAfterAuth('daily');
+          setScreen('auth');
+        }}
+      />
+    );
+  }
 
   const { state } = game;
 
@@ -98,7 +113,11 @@ export default function App() {
           />
         )
       ) : screen === 'auth' ? (
-        <Auth auth={auth} onDone={() => setScreen('ranked')} onCancel={() => setScreen('home')} />
+        <Auth
+          auth={auth}
+          onDone={() => setScreen(afterAuth)}
+          onCancel={() => setScreen(afterAuth === 'daily' ? 'daily' : 'home')}
+        />
       ) : screen === 'ranked' ? (
         <Ranked game={game} auth={auth} onBack={() => setScreen('home')} />
       ) : (
@@ -109,7 +128,11 @@ export default function App() {
           onCreate={game.createRoom}
           onJoin={game.joinRoom}
           onTraining={() => setScreen('training')}
-          onRanked={() => setScreen(auth.user ? 'ranked' : 'auth')}
+          onDaily={() => setScreen('daily')}
+          onRanked={() => {
+            setAfterAuth('ranked');
+            setScreen(auth.user ? 'ranked' : 'auth');
+          }}
         />
       )}
     </div>

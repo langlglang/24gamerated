@@ -13,6 +13,7 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      '/api': 'http://localhost:3000',
       '/healthz': 'http://localhost:3000',
     },
   },
