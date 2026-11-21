@@ -3,20 +3,35 @@ import { Auth } from './screens/Auth.js';
 import { Daily } from './screens/Daily.js';
 import { ResetPassword } from './screens/ResetPassword.js';
 
-/** Token from an emailed reset link (?reset=...), read once on load. */
+const RESET_KEY = '24game.resetToken';
+
+/**
+ * Token from an emailed reset link (?reset=...). It is moved out of the
+ * address bar immediately, so it never sits in history, gets synced, or is
+ * shared by copying the URL; sessionStorage keeps it across a reload.
+ */
 function readResetToken(): string | null {
   try {
-    return new URLSearchParams(window.location.search).get('reset');
+    const url = new URL(window.location.href);
+    const fromUrl = url.searchParams.get('reset');
+    if (fromUrl) {
+      sessionStorage.setItem(RESET_KEY, fromUrl);
+      url.searchParams.delete('reset');
+      window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+      return fromUrl;
+    }
+    return sessionStorage.getItem(RESET_KEY);
   } catch {
     return null;
   }
 }
 
-/** Drop the token from the address bar so it isn't left in history or shared. */
 function clearResetToken(): void {
-  const url = new URL(window.location.href);
-  url.searchParams.delete('reset');
-  window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+  try {
+    sessionStorage.removeItem(RESET_KEY);
+  } catch {
+    // Nothing stored.
+  }
 }
 import { Game } from './screens/Game.js';
 import { Home } from './screens/Home.js';
@@ -35,6 +50,7 @@ export default function App() {
   /** Where to land after signing in. */
   const [afterAuth, setAfterAuth] = useState<Screen>('ranked');
   const [resetToken, setResetToken] = useState<string | null>(readResetToken);
+  const [authView, setAuthView] = useState<'login' | 'forgot'>('login');
 
   // The socket is the authority on the player's record once connected, so a
   // rating change mid-session flows straight back into the auth cache.
@@ -64,7 +80,13 @@ export default function App() {
           clearResetToken();
           setResetToken(null);
           setAfterAuth('home');
+          setAuthView('forgot');
           setScreen('auth');
+        }}
+        onCancel={() => {
+          clearResetToken();
+          setResetToken(null);
+          setScreen('home');
         }}
       />
     );
@@ -151,9 +173,17 @@ export default function App() {
         )
       ) : screen === 'auth' ? (
         <Auth
+          key={authView}
           auth={auth}
-          onDone={() => setScreen(afterAuth)}
-          onCancel={() => setScreen(afterAuth === 'daily' ? 'daily' : 'home')}
+          initialView={authView}
+          onDone={() => {
+            setAuthView('login');
+            setScreen(afterAuth);
+          }}
+          onCancel={() => {
+            setAuthView('login');
+            setScreen(afterAuth === 'daily' ? 'daily' : 'home');
+          }}
         />
       ) : screen === 'ranked' ? (
         <Ranked game={game} auth={auth} onBack={() => setScreen('home')} />

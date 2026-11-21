@@ -20,7 +20,7 @@ import {
   validateUsername,
   verifyPassword,
 } from './credentials.js';
-import { bearerFrom, issueToken, verifyToken } from './tokens.js';
+import { bearerFrom, issueToken, tokenMatchesPassword, verifyToken } from './tokens.js';
 import { appUrl, sendMail } from './mailer.js';
 import { consumePasswordReset, createPasswordReset } from '../db/resets.js';
 
@@ -86,6 +86,10 @@ export async function requireAuth(
     res.status(401).json({ error: 'That account no longer exists.' });
     return;
   }
+  if (!tokenMatchesPassword(claims, user.password_hash)) {
+    res.status(401).json({ error: 'Your password was changed. Sign in again.' });
+    return;
+  }
   req.user = user;
   next();
 }
@@ -94,20 +98,29 @@ export async function requireAuth(
  * Crude in-memory login throttle. Not a substitute for a real rate limiter,
  * but enough to make online password guessing impractical on a single box.
  */
-const attempts = new Map<string, { count: number; firstAt: number }>();
+const attempts = new Map<string, { count: number; firstAt: number; windowMs: number }>();
 const ATTEMPT_WINDOW_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 10;
 
-function throttled(key: string): boolean {
+function throttled(key: string, max = MAX_ATTEMPTS, windowMs = ATTEMPT_WINDOW_MS): boolean {
   const now = Date.now();
   const entry = attempts.get(key);
-  if (!entry || now - entry.firstAt > ATTEMPT_WINDOW_MS) {
-    attempts.set(key, { count: 1, firstAt: now });
+  if (!entry || now - entry.firstAt > windowMs) {
+    attempts.set(key, { count: 1, firstAt: now, windowMs });
     return false;
   }
   entry.count += 1;
-  return entry.count > MAX_ATTEMPTS;
+  return entry.count > max;
 }
+
+/** Drop finished windows so the map cannot grow without bound. */
+const throttleSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of attempts) {
+    if (now - entry.firstAt > entry.windowMs) attempts.delete(key);
+  }
+}, 60_000);
+throttleSweep.unref?.();
 
 function clearThrottle(key: string): void {
   attempts.delete(key);
@@ -130,7 +143,7 @@ export function createAuthRouter(): express.Router {
 
     try {
       const user = await createUser(email, username, await hashPassword(password));
-      res.status(201).json({ token: issueToken({ userId: user.id, username: user.username }), user: toPublicUser(user) });
+      res.status(201).json({ token: issueToken(user), user: toPublicUser(user) });
     } catch (err) {
       if (err instanceof DuplicateUserError) {
         res.status(409).json({
@@ -177,7 +190,7 @@ export function createAuthRouter(): express.Router {
 
       clearThrottle(key);
       await touchLastSeen(user.id);
-      res.json({ token: issueToken({ userId: user.id, username: user.username }), user: toPublicUser(user) });
+      res.json({ token: issueToken(user), user: toPublicUser(user) });
     } catch (err) {
       console.error('[auth] login failed:', err);
       res.status(503).json({ error: 'Accounts are temporarily unavailable. Try again shortly.' });
@@ -193,27 +206,31 @@ export function createAuthRouter(): express.Router {
       res.status(400).json({ error: issue.message, field: 'email' });
       return;
     }
-    if (throttled(`forgot:${req.ip ?? 'unknown'}:${email.toLowerCase()}`)) {
-      res.status(429).json({ error: 'Too many requests. Wait a few minutes and try again.' });
+    // Per sender (needs 'trust proxy' so req.ip is the player, not Render's
+    // proxy) and a tighter per-address cap so no inbox can be flooded.
+    const perIp = throttled(`forgot-ip:${req.ip ?? 'unknown'}`, 10, 60 * 60_000);
+    const perEmail = throttled(`forgot-email:${email.toLowerCase()}`, 3, 60 * 60_000);
+    if (perIp || perEmail) {
+      res.status(429).json({ error: 'Too many requests. Wait a while and try again.' });
       return;
     }
 
-    const base = appUrl();
-    try {
-      const user = await findByEmail(email);
-      if (user && base) {
-        const token = randomBytes(32).toString('base64url');
-        await createPasswordReset(user.id, sha256(token), new Date(Date.now() + RESET_TTL_MS));
-        const link = `${base}/?reset=${token}`;
-        await sendMail({ to: user.email, ...resetEmail(user.username, link) });
-      } else if (user && !base) {
-        console.error('[auth] APP_URL is not set — cannot build a password reset link');
-      }
-    } catch (err) {
-      // Logged, not surfaced: the reply must not reveal whether the account exists.
-      console.error('[auth] password reset request failed:', err);
-    }
+    // Answer before touching the database or the mail API, so the response
+    // time cannot reveal whether the address has an account.
     res.json({ ok: true });
+
+    void (async () => {
+      const user = await findByEmail(email);
+      if (!user) return;
+      const base = appUrl();
+      if (!base) {
+        console.error('[auth] APP_URL is not set — cannot build a password reset link');
+        return;
+      }
+      const token = randomBytes(32).toString('base64url');
+      await createPasswordReset(user.id, sha256(token), new Date(Date.now() + RESET_TTL_MS));
+      await sendMail({ to: user.email, ...resetEmail(user.username, `${base}/?reset=${token}`) });
+    })().catch((err) => console.error('[auth] password reset request failed:', err));
   });
 
   router.post('/auth/reset', requireDatabase, async (req, res) => {
@@ -231,14 +248,15 @@ export function createAuthRouter(): express.Router {
     try {
       const user = await consumePasswordReset(sha256(token), await hashPassword(password));
       if (!user) {
-        res.status(400).json({
+        // 410 lets the client offer a fresh link only for a dead token.
+        res.status(410).json({
           error: 'This reset link has expired or was already used. Request a new one.',
         });
         return;
       }
       await touchLastSeen(user.id);
       res.json({
-        token: issueToken({ userId: user.id, username: user.username }),
+        token: issueToken(user),
         user: toPublicUser(user),
       });
     } catch (err) {

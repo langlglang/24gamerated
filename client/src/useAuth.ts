@@ -14,7 +14,10 @@ export interface AuthApi {
   /** Email a reset link. Resolves to an error message, or null when sent. */
   requestReset: (email: string) => Promise<string | null>;
   /** Set a new password from an emailed token; signs in on success. */
-  resetPassword: (token: string, password: string) => Promise<string | null>;
+  resetPassword: (
+    token: string,
+    password: string,
+  ) => Promise<{ error: string; tokenInvalid: boolean } | null>;
   logout: () => void;
   /** Replace the cached user, e.g. after a rated match moves the rating. */
   setUser: (user: PublicUserView | null) => void;
@@ -111,7 +114,8 @@ export function useAuth(): AuthApi {
         adopt(result.data);
         return null;
       }
-      return result.error;
+      // 410: the link itself is spent or expired; anything else is retryable.
+      return { error: result.error, tokenInvalid: result.status === 410 };
     },
     [adopt],
   );

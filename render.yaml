@@ -36,3 +36,14 @@ services:
       # Render can generate one for you.
       - key: JWT_SECRET
         generateValue: true
+      # Password reset email through Resend. Without both, production sends
+      # no reset emails and logs an error. MAIL_FROM must be on a domain
+      # verified in Resend, e.g. "24 Rated <no-reply@yourdomain.com>".
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      # Public base URL for links in emails, e.g. https://two4gamerated.onrender.com.
+      # Required in production for password resets.
+      - key: APP_URL
+        sync: false

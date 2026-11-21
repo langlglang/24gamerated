@@ -5,6 +5,8 @@ interface Props {
   auth: AuthApi;
   onDone: () => void;
   onCancel: () => void;
+  /** Open straight on the forgot-password form (from a dead reset link). */
+  initialView?: 'login' | 'register' | 'forgot';
 }
 
 type View = 'login' | 'register' | 'forgot';
@@ -51,8 +53,8 @@ function Field({
   );
 }
 
-export function Auth({ auth, onDone, onCancel }: Props) {
-  const [view, setView] = useState<View>('login');
+export function Auth({ auth, onDone, onCancel, initialView = 'login' }: Props) {
+  const [view, setView] = useState<View>(initialView);
   const [identifier, setIdentifier] = useState('');
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');

@@ -6,10 +6,19 @@ export async function createPasswordReset(
   tokenHash: string,
   expiresAt: Date,
 ): Promise<void> {
+  // Only the newest link works: requesting again cancels the earlier ones.
+  await query(`UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL`, [
+    userId,
+  ]);
   await query(
     `INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
     [tokenHash, userId, expiresAt],
   );
+}
+
+/** Housekeeping: rows past their expiry are useless after a day. */
+export async function pruneExpiredResets(): Promise<void> {
+  await query(`DELETE FROM password_resets WHERE expires_at < now() - interval '1 day'`);
 }
 
 /**

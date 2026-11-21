@@ -18,7 +18,9 @@ import type { RatedMatchOutcome, Room } from './room.js';
 import { Matchmaker } from './matchmaking.js';
 import { createAuthRouter } from './auth/routes.js';
 import { createDailyRouter } from './daily/routes.js';
-import { verifyToken } from './auth/tokens.js';
+import { tokenMatchesPassword, verifyToken } from './auth/tokens.js';
+import { appUrl, isMailConfigured } from './auth/mailer.js';
+import { pruneExpiredResets } from './db/resets.js';
 import { isDatabaseConfigured, pingDatabase } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import { findById, findByUsername, toPublicUser, touchLastSeen } from './db/users.js';
@@ -30,6 +32,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(here, CLIENT_DIST_RELATIVE);
 
 const app = express();
+// Render (and most hosts) sit behind one proxy; without this req.ip is the
+// proxy's address and every per-IP throttle collapses into one bucket.
+app.set('trust proxy', 1);
 const httpServer = createServer(app);
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
@@ -345,7 +350,7 @@ io.on('connection', (socket) => {
     void (async () => {
       try {
         const row = await findById(claims.userId);
-        if (!row) {
+        if (!row || !tokenMatchesPassword(claims, row.password_hash)) {
           ack({ ok: false, error: 'not-signed-in' });
           return;
         }
@@ -574,6 +579,7 @@ if (isDatabaseConfigured()) {
   const sweeper = setInterval(
     () => {
       void expireOlderThan(10).catch((err) => console.error('[challenges] sweep failed:', err));
+      void pruneExpiredResets().catch((err) => console.error('[auth] reset sweep failed:', err));
     },
     5 * 60_000,
   );
@@ -588,6 +594,11 @@ async function boot(): Promise<void> {
         console.log(`[db] applied ${report.applied.length} migration(s)`);
       }
       console.log('[db] connected — rated play enabled');
+      if (IS_PRODUCTION && (!isMailConfigured() || !appUrl())) {
+        console.warn(
+          '[mail] RESEND_API_KEY, MAIL_FROM and APP_URL must all be set — password reset emails are OFF',
+        );
+      }
     } catch (err) {
       console.error('[db] migration failed, rated play will not work:', err);
     }

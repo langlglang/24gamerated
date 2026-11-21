@@ -7,29 +7,40 @@ export function ResetPassword({
   token,
   onDone,
   onRequestNew,
+  onCancel,
 }: {
   auth: AuthApi;
   token: string;
   onDone: () => void;
   onRequestNew: () => void;
+  onCancel: () => void;
 }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [confirmTouched, setConfirmTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tokenInvalid, setTokenInvalid] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const mismatch = confirmTouched && confirm !== password;
 
   async function submit() {
     setConfirmTouched(true);
+    if (password.length < 8) {
+      setError('Use at least 8 characters.');
+      return;
+    }
     if (confirm !== password) return;
     setBusy(true);
     setError(null);
     const result = await auth.resetPassword(token, password);
     setBusy(false);
-    if (result) setError(result);
-    else onDone();
+    if (!result) {
+      onDone();
+      return;
+    }
+    setError(result.error);
+    setTokenInvalid(result.tokenInvalid);
   }
 
   return (
@@ -102,9 +113,13 @@ export function ResetPassword({
         </button>
       </form>
 
-      {error && (
+      {tokenInvalid ? (
         <button type="button" className="btn-secondary" onClick={onRequestNew}>
           Request a new link
+        </button>
+      ) : (
+        <button type="button" className="btn-secondary" onClick={onCancel}>
+          Cancel
         </button>
       )}
     </div>
