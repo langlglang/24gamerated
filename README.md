@@ -55,6 +55,7 @@ To play across devices on your LAN, run `npm run build && npm start` and hit `ht
 | `npm run build` | Builds shared → client → server |
 | `npm start` | Runs the built server, which also serves the built client |
 | `npm run migrate` | Applies database migrations (the server also does this on boot) |
+| `npm run delete-account -- <username or email>` | Shows what a privacy deletion would remove; add `--yes` to delete the account, its matches, daily results and follows |
 | `npm run smoke` | End-to-end check of guest play against a running server |
 | `npm run smoke -- --rated` / `node scripts/smoke-rated.mjs` | End-to-end check of the rated surface |
 | `npm run typecheck` | Typechecks every workspace |

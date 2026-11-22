@@ -21,6 +21,7 @@
     "test": "npm run build:shared && npm run test --workspace=shared && npm run test --workspace=server",
     "smoke": "node scripts/smoke.mjs",
     "migrate": "npm run build:shared && npm run build:server && npm run migrate --workspace=server",
+    "delete-account": "npm run build:shared && npm run build:server && npm run delete-account --workspace=server --",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
