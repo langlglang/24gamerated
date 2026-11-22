@@ -3,6 +3,9 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      // Phones in landscape and short phones (iPhone SE, Safari with its bars):
+      // the game screen tightens so the cards and Buzz stay above the fold.
+      screens: { short: { raw: "(max-height: 760px)" } },
       // "Paper" palette. Ink on warm paper, one highlight, two semantic colours.
       // Every text pairing here clears WCAG AA (4.5:1) on both paper and card.
       colors: {

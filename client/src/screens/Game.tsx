@@ -12,6 +12,7 @@ import { CountdownBar } from '../components/Countdown.js';
 import { HandResultOverlay } from '../components/HandResultOverlay.js';
 import { BuzzAlert } from '../components/BuzzAlert.js';
 import { Scoreboard } from '../components/Scoreboard.js';
+import { TurnUpright } from '../components/TurnUpright.js';
 
 interface Props {
   state: PublicGameState;
@@ -194,7 +195,8 @@ export function Game({
   const othersAway = state.phase === 'paused' && missing.length > 0;
 
   return (
-    <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 px-5 pb-6 pt-3">
+    <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 px-5 pb-6 pt-3 short:gap-2 short:pb-3">
+      <TurnUpright />
       {/* Above the hand-result overlay, so Leave is reachable at every moment. */}
       <header className="relative z-30 flex h-11 items-center justify-between border-b border-ink bg-paper text-sm">
         <span className="w-28">
@@ -234,7 +236,7 @@ export function Game({
         <CountdownBar timer={state.timer} />
       </div>
 
-      <div className="flex flex-1 flex-col justify-center gap-4">
+      <div className="flex flex-1 flex-col justify-center gap-4 short:gap-2">
         <p className="text-center font-display text-2xl font-semibold" aria-live="polite">
           {state.phase === 'paused' && `Waiting for ${missingNames} to reconnect…`}
           {someoneElseAnswering && `${activeName} buzzed in…`}
@@ -272,7 +274,7 @@ export function Game({
       <div className="grid grid-cols-3 gap-3">
         <button
           type="button"
-          className="btn-primary col-span-2 h-16 text-xl font-bold"
+          className="btn-primary col-span-2 h-16 short:h-14 text-xl font-bold"
           disabled={!canAct}
           onClick={onBuzz}
         >
@@ -280,7 +282,7 @@ export function Game({
         </button>
         <button
           type="button"
-          className="btn-secondary h-16 px-2 text-sm"
+          className="btn-secondary h-16 short:h-14 px-2 text-sm"
           disabled={!canAct}
           onClick={onCallNoSolution}
         >

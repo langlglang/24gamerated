@@ -150,6 +150,9 @@ export function Home({
               className="field text-center text-2xl font-bold uppercase tracking-[0.4em]"
               maxLength={7}
               autoComplete="off"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
               value={code}
               onChange={(e) => {
                 setCode(e.target.value.toUpperCase());
@@ -180,13 +183,13 @@ export function Home({
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted">{connected ? 'Online' : 'Connecting…'}</span>
         {user ? (
-          <button type="button" className="font-semibold underline" onClick={onRanked}>
+          <button type="button" className="-mr-3 min-h-[44px] px-3 font-semibold underline" onClick={onRanked}>
             {user.username} · {user.rating}
           </button>
         ) : (
           <button
             type="button"
-            className="font-semibold underline disabled:opacity-40"
+            className="-mr-3 min-h-[44px] px-3 font-semibold underline disabled:opacity-40"
             disabled={authLoading}
             onClick={onRanked}
           >
@@ -234,7 +237,7 @@ export function Home({
 
       <p className="mt-auto flex items-center justify-center gap-2 text-sm text-muted">
         Have a room code?
-        <button type="button" className="font-semibold text-ink underline" onClick={() => setView('join')}>
+        <button type="button" className="min-h-[44px] px-2 font-semibold text-ink underline" onClick={() => setView('join')}>
           Join a room
         </button>
       </p>
