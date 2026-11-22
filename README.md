@@ -410,6 +410,9 @@ K-factors, `RATING_FLOOR`); matchmaking bands live in `server/src/matchmaking.ts
 | `RESEND_API_KEY` | For reset emails | [Resend](https://resend.com) API key. Mail is sent only when this and `MAIL_FROM` are both set. |
 | `MAIL_FROM` | For reset emails | Sender, e.g. `24 Rated <no-reply@yourdomain.com>`, on a domain verified in Resend. |
 | `APP_URL` | **In production** | Public base URL for links in emails, e.g. `https://two4gamerated.onrender.com`. Dev falls back to the Vite origin. |
+| `DB_POOL_MAX` | No | Postgres connections the server may hold, 1–100. Defaults to 10. |
+| `SENTRY_DSN` | No | Turns on error reports (server crashes and browser errors) to [Sentry](https://sentry.io). Unset ⇒ nothing is sent. |
+| `SENTRY_ENVIRONMENT` | No | Label for those reports. Defaults to `production` or `development`. |
 
 Without mail configured, development prints each email (link included) to the server console.
 Production sends nothing and logs an error, but `/api/auth/forgot` still answers the same way, so
@@ -518,6 +521,25 @@ and takes roughly 50 seconds to wake, so a match interrupted by sleep is gone. U
 to a paid instance type to stay warm for real play.
 
 Render injects `PORT`; the server already reads it.
+
+On a redeploy Render sends `SIGTERM`. The server tells connected players the game is updating,
+stops taking new rooms and rated games, and exits within a few seconds. Games in progress end
+without a result.
+
+### Capacity
+
+From a local load test (bots playing full matches, each hand about 2–3× faster than people play):
+
+- **Game traffic is cheap.** About 37 KB of memory per connected player. CPU grows linearly, and
+  13 000 bot players on one fast core still answered buzzes with a p95 of 13 ms.
+- **Rough safe numbers per instance:** Render free (0.1 CPU) 300–500 players; Starter (0.5 CPU)
+  2 000–2 500; 1–2 CPU about 4 000–6 000. Past that, the in-memory rooms would need to move to a
+  shared store and run on several instances.
+- **Sign-ins.** Password hashing runs in two worker threads, so a burst of logins no longer stalls
+  live games (at 40 logins a second the server still answered in under 20 ms). Logins queue
+  instead; more than 200 waiting are refused with a "try again" message.
+- **Daily stats** are cached for 5 seconds, so a rush at midnight UTC runs the stats query a few
+  times rather than once per player.
 
 ---
 

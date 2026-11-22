@@ -283,6 +283,19 @@ export function Auth({ auth, onDone, onCancel, initialView = 'login' }: Props) {
         <button type="submit" className="btn-primary w-full text-lg" disabled={busy}>
           {busy ? 'Working…' : registering ? 'Create account' : 'Sign in'}
         </button>
+        {registering && (
+          <p className="text-center text-xs text-muted">
+            By creating an account you agree to the{' '}
+            <a href="/terms" target="_blank" rel="noopener" className="underline">
+              Terms
+            </a>{' '}
+            and{' '}
+            <a href="/privacy" target="_blank" rel="noopener" className="underline">
+              Privacy policy
+            </a>
+            .
+          </p>
+        )}
       </form>
 
       <button type="button" className="btn-secondary" onClick={onCancel}>

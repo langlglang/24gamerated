@@ -190,6 +190,8 @@ export interface ServerToClientEvents {
   /** An illegal combine attempt — client flashes the error, clock keeps running. */
   combineRejected: (payload: { error: ValidationError }) => void;
   roomClosed: (payload: { reason: string }) => void;
+  /** Broadcast to everyone, e.g. when the server is about to restart for a deploy. */
+  serverNotice: (payload: { message: string }) => void;
   /**
    * This socket's seat was reclaimed by another connection holding the same
    * seat credentials (normally the same player in a newer tab). The room is

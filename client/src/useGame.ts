@@ -232,6 +232,7 @@ export function useGame(token: string | null): GameApi {
     socket.on('ratedResult', (result) =>
       setRatedResult((prev) => (prev && prev.matchId === result.matchId ? prev : result)),
     );
+    socket.on('serverNotice', ({ message }) => setNotice(message));
     socket.on('seatReplaced', () => {
       // A newer connection (normally this player's other tab) took the seat.
       // Forget it here, but leave the stored session alone: that tab uses it.
@@ -258,6 +259,7 @@ export function useGame(token: string | null): GameApi {
       socket.off('ratedMatchFound');
       socket.off('ratedResult');
       socket.off('seatReplaced');
+      socket.off('serverNotice');
     };
   }, [socket, rejoin, adoptSeat]);
 

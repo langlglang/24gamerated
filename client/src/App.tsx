@@ -38,12 +38,13 @@ import { Game } from './screens/Game.js';
 import { Home } from './screens/Home.js';
 import { Lobby } from './screens/Lobby.js';
 import { NotFound } from './screens/NotFound.js';
+import { Legal } from './screens/Legal.js';
 import { Ranked } from './screens/Ranked.js';
 import { Training } from './screens/Training.js';
 import { useAuth } from './useAuth.js';
 import { useGame } from './useGame.js';
 
-type RoutedScreen = 'home' | 'auth' | 'ranked' | 'training' | 'daily';
+type RoutedScreen = 'home' | 'auth' | 'ranked' | 'training' | 'daily' | 'privacy' | 'terms';
 /** Screens with no address of their own: they keep whatever URL was typed. */
 type Screen = RoutedScreen | 'notFound' | 'roomNotFound';
 
@@ -54,6 +55,8 @@ const PATHS: Record<RoutedScreen, string> = {
   ranked: '/ranked',
   training: '/practice',
   daily: '/daily',
+  privacy: '/privacy',
+  terms: '/terms',
 };
 
 /** Any /room/... address. Whether the code in it could be real is checked separately. */
@@ -279,6 +282,8 @@ export default function App() {
         />
       ) : screen === 'ranked' ? (
         <Ranked game={game} auth={auth} onBack={() => setScreen('home')} />
+      ) : screen === 'privacy' || screen === 'terms' ? (
+        <Legal doc={screen} onHome={() => setScreen('home')} />
       ) : screen === 'notFound' || screen === 'roomNotFound' ? (
         <NotFound
           kind={screen === 'roomNotFound' ? 'room' : 'page'}

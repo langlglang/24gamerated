@@ -238,6 +238,14 @@ export function Home({
           Join a room
         </button>
       </p>
+      <p className="flex items-center justify-center gap-4 text-xs text-muted">
+        <a href="/privacy" className="min-h-[44px] content-center underline">
+          Privacy
+        </a>
+        <a href="/terms" className="min-h-[44px] content-center underline">
+          Terms
+        </a>
+      </p>
     </div>
   );
 }

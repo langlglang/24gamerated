@@ -22,6 +22,7 @@ import {
   validateUsername,
   verifyPasswordConstantTime,
 } from './credentials.js';
+import { HashPoolBusyError } from './hashPool.js';
 import { bearerFrom, issueToken, tokenMatchesPassword, verifyToken } from './tokens.js';
 import { appUrl, sendMail } from './mailer.js';
 import { consumePasswordReset, createPasswordReset } from '../db/resets.js';
@@ -128,6 +129,10 @@ function clearThrottle(key: string): void {
   attempts.delete(key);
 }
 
+/** New accounts per sender IP. Generous, for shared school or office networks. */
+const REGISTER_WINDOW_MS = 60 * 60_000;
+const REGISTER_PER_IP = 20;
+
 /** Password-reset requests: per sender IP, and per target address. */
 const FORGOT_WINDOW_MS = 60 * 60_000;
 const FORGOT_PER_IP = 10;
@@ -167,6 +172,11 @@ export function createAuthRouter(): express.Router {
       return;
     }
 
+    if (throttled(`register-ip:${req.ip ?? 'unknown'}`, REGISTER_PER_IP, REGISTER_WINDOW_MS)) {
+      res.status(429).json({ error: 'Too many new accounts from this network. Try again later.' });
+      return;
+    }
+
     try {
       const user = await createUser(email, username, await hashPassword(password));
       res.status(201).json({ token: issueToken(user), user: toPublicUser(user) });
@@ -179,6 +189,10 @@ export function createAuthRouter(): express.Router {
               : 'An account with that email already exists.',
           field: err.field,
         });
+        return;
+      }
+      if (err instanceof HashPoolBusyError) {
+        res.status(503).json({ error: 'Lots of people are signing up right now. Try again in a moment.' });
         return;
       }
       console.error('[auth] register failed:', err);

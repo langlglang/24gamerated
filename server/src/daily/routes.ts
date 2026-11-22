@@ -21,7 +21,7 @@ import { requireAuth, requireDatabase, type AuthedRequest } from '../auth/routes
 import { bearerFrom, tokenMatchesPassword, verifyToken } from '../auth/tokens.js';
 import { dailyElapsedMs, dailySolveTimes, getDailySolve, recordDailyStart, saveDailySolve } from '../db/daily.js';
 import { isDatabaseConfigured } from '../db/pool.js';
-import { findById } from '../db/users.js';
+import { findById, isTestEmail } from '../db/users.js';
 import { signSolveReceipt, signStartTicket, verifySolveReceipt, verifyStartTicket } from './ticket.js';
 
 const MAX_STEPS = 5;
@@ -73,9 +73,57 @@ function readSolve(req: express.Request, res: express.Response): { day: string; 
   return { day, steps };
 }
 
+/**
+ * Everyone's solve times per day, cached briefly. The load test showed the
+ * full query (every row, plus a scan for test accounts) turning a solve rush
+ * into database timeouts; with the cache it runs at most once per few seconds
+ * per day, however many players ask. A solve saved here is added straight
+ * into the cached list, so the solver sees themselves counted immediately.
+ */
+const STATS_TTL_MS = 5_000;
+const timesCache = new Map<string, { at: number; times: Promise<number[]>; loadedAt?: number }>();
+
+function cachedSolveTimes(day: string): Promise<number[]> {
+  const now = Date.now();
+  const hit = timesCache.get(day);
+  if (hit && now - hit.at < STATS_TTL_MS) return hit.times;
+  // One query in flight per day; concurrent requests share it.
+  const times = dailySolveTimes(day);
+  const entry: { at: number; times: Promise<number[]>; loadedAt?: number } = { at: now, times };
+  timesCache.set(day, entry);
+  times.then(() => {
+    entry.loadedAt = Date.now();
+  }, () => {
+    if (timesCache.get(day)?.times === times) timesCache.delete(day);
+  });
+  for (const key of timesCache.keys()) if (!isOpenDay(key)) timesCache.delete(key);
+  return times;
+}
+
+/**
+ * Put a just-saved solve into the cached list (kept sorted). Only when that
+ * list finished loading before the save began, so it can't already hold the
+ * solve; otherwise drop the entry and let the next request refetch.
+ */
+async function addToCachedTimes(day: string, timeMs: number, saveStartedAt: number): Promise<void> {
+  const hit = timesCache.get(day);
+  if (!hit) return;
+  if (hit.loadedAt === undefined || hit.loadedAt >= saveStartedAt) {
+    timesCache.delete(day);
+    return;
+  }
+  try {
+    const times = await hit.times;
+    const at = times.findIndex((t) => t > timeMs);
+    times.splice(at === -1 ? times.length : at, 0, timeMs);
+  } catch {
+    // The next request refetches.
+  }
+}
+
 async function statsView(day: string, userId: string | null): Promise<DailyStatsView> {
   const [times, mine] = await Promise.all([
-    dailySolveTimes(day),
+    cachedSolveTimes(day),
     userId ? getDailySolve(userId, day) : Promise.resolve(null),
   ]);
   const mineMs = mine ? mine.timeMs : null;
@@ -233,7 +281,10 @@ export function createDailyRouter(): express.Router {
         refuse(res, 'too-fast', TOO_FAST_MESSAGE);
         return;
       }
-      await saveDailySolve(userId, day, storedMs, steps);
+      const saveStartedAt = Date.now();
+      const saved = await saveDailySolve(userId, day, storedMs, steps);
+      // Test accounts are left out of the curve, so they aren't added to it either.
+      if (saved && !isTestEmail(req.user!.email)) await addToCachedTimes(day, storedMs, saveStartedAt);
       res.json(await statsView(day, userId));
     } catch (err) {
       console.error('[daily] solve failed:', err);

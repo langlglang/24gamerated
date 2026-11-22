@@ -2,6 +2,9 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.js';
 import './index.css';
+import { installErrorReporter } from './errorReporter.js';
+
+installErrorReporter();
 
 const container = document.getElementById('root');
 if (!container) throw new Error('#root missing from index.html');
