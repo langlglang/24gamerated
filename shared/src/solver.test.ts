@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { equals, rational } from './rational.js';
-import { expressionForSteps, isSolvable, solveValues } from './solver.js';
+import { allSolutions, expressionForSteps, isSolvable, solveValues } from './solver.js';
 import type { Card } from './cards.js';
 import { ALL_RULE_SETS, describeRules, type RuleSet } from './types.js';
 import { tableFromValues, validateSteps } from './validator.js';
@@ -196,5 +196,30 @@ describe('expressionForSteps', () => {
   it('returns null for incomplete or broken steps', () => {
     expect(expressionForSteps(cards, [{ aId: 'S8', op: '+', bId: 'H3' }])).toBeNull();
     expect(expressionForSteps(cards, [{ aId: 'S8', op: '+', bId: 'S8' }])).toBeNull();
+  });
+});
+
+describe('allSolutions', () => {
+  const open = { fractions: true, negatives: true };
+  it('lists every solution, each one correct', () => {
+    const list = allSolutions([4, 6, 1, 1], open);
+    expect(list.length).toBeGreaterThan(1);
+    for (const expr of list) expect(Function(`return ${expr}`)()).toBeCloseTo(24);
+  });
+  it('finds the fraction-only solution and respects the rules', () => {
+    expect(allSolutions([3, 3, 8, 8], open)).toContain('8 / (3 - 8 / 3)');
+    expect(allSolutions([3, 3, 8, 8], { fractions: false, negatives: true })).toEqual([]);
+  });
+  it('returns nothing for an impossible hand and honours the limit', () => {
+    expect(allSolutions([1, 1, 1, 1], open)).toEqual([]);
+    expect(allSolutions([2, 3, 4, 6], open, 3)).toHaveLength(3);
+  });
+});
+
+describe('allSolutions de-duplication', () => {
+  it('lists reorderings of the same sum once', () => {
+    const list = allSolutions([10, 11, 12, 13], { fractions: false, negatives: false });
+    const sums = list.filter((e) => !/[*/(]/.test(e));
+    expect(sums).toHaveLength(1);
   });
 });

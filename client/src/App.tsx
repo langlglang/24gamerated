@@ -39,12 +39,23 @@ import { Home } from './screens/Home.js';
 import { Lobby } from './screens/Lobby.js';
 import { NotFound } from './screens/NotFound.js';
 import { Legal } from './screens/Legal.js';
+import { HowToPlay } from './screens/HowToPlay.js';
+import { Solver } from './screens/Solver.js';
 import { Ranked } from './screens/Ranked.js';
 import { Training } from './screens/Training.js';
 import { useAuth } from './useAuth.js';
 import { useGame } from './useGame.js';
 
-type RoutedScreen = 'home' | 'auth' | 'ranked' | 'training' | 'daily' | 'privacy' | 'terms';
+type RoutedScreen =
+  | 'home'
+  | 'auth'
+  | 'ranked'
+  | 'training'
+  | 'daily'
+  | 'privacy'
+  | 'terms'
+  | 'howto'
+  | 'solver';
 /** Screens with no address of their own: they keep whatever URL was typed. */
 type Screen = RoutedScreen | 'notFound' | 'roomNotFound';
 
@@ -57,6 +68,23 @@ const PATHS: Record<RoutedScreen, string> = {
   daily: '/daily',
   privacy: '/privacy',
   terms: '/terms',
+  howto: '/how-to-play',
+  solver: '/solver',
+};
+
+/** Tab titles; the server sends the same ones (server/src/seo.ts) for search and previews. */
+const TITLES: Record<Screen, string> = {
+  home: '24 – Play the 24 math card game online, free',
+  auth: 'Sign in – 24',
+  ranked: 'Ranked – 24',
+  training: 'Practice 24 – solo training mode',
+  daily: 'Daily 24 puzzle – a new math puzzle every day',
+  privacy: 'Privacy policy – 24game.online',
+  terms: 'Terms of use – 24game.online',
+  howto: 'How to play 24: rules, examples and tips',
+  solver: '24 game solver – every solution for any four numbers',
+  notFound: 'Page not found – 24',
+  roomNotFound: 'Room not found – 24',
 };
 
 /** Any /room/... address. Whether the code in it could be real is checked separately. */
@@ -131,6 +159,10 @@ export default function App() {
       setScreen((s) => (s === 'notFound' || s === 'roomNotFound' ? 'home' : s));
     }
   }, [roomCode]);
+
+  useEffect(() => {
+    document.title = roomCode ? `Room ${roomCode} – 24` : TITLES[screen];
+  }, [screen, roomCode]);
 
   // Back / forward buttons.
   useEffect(() => {
@@ -282,6 +314,14 @@ export default function App() {
         />
       ) : screen === 'ranked' ? (
         <Ranked game={game} auth={auth} onBack={() => setScreen('home')} />
+      ) : screen === 'howto' ? (
+        <HowToPlay
+          onHome={() => setScreen('home')}
+          onPlay={() => setScreen('home')}
+          onSolver={() => setScreen('solver')}
+        />
+      ) : screen === 'solver' ? (
+        <Solver onHome={() => setScreen('home')} onHowTo={() => setScreen('howto')} />
       ) : screen === 'privacy' || screen === 'terms' ? (
         <Legal doc={screen} onHome={() => setScreen('home')} />
       ) : screen === 'notFound' || screen === 'roomNotFound' ? (
