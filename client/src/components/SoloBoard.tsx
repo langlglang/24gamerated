@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { CombineBoard } from './CombineBoard.js';
 import { CountdownBar } from './Countdown.js';
 import type { TrainingGame, TrainingState } from '../training.js';
+import { TurnUpright } from './TurnUpright.js';
 
 /**
  * The solo play surface shared by practice and the daily: clock, cards,
@@ -25,6 +26,7 @@ export function SoloBoard({
 
   return (
     <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-4 px-5 pb-6 pt-3">
+      <TurnUpright />
       {header}
       {above}
 

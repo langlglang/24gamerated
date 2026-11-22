@@ -24,6 +24,8 @@ interface Props {
   columns?: 2 | 3;
 }
 
+const OP_NAMES: Record<string, string> = { '+': 'plus', '-': 'minus', '*': 'times', '/': 'divided by' };
+
 export function CombineBoard({
   dealt,
   table,
@@ -79,8 +81,8 @@ export function CombineBoard({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className={`grid w-full gap-3 ${columns === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+    <div className="flex flex-col gap-4 short:gap-2">
+      <div className={`grid w-full gap-3 short:gap-2 ${columns === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
         {table.map((card) => (
           <PlayingCard
             key={card.id}
@@ -105,12 +107,12 @@ export function CombineBoard({
             disabled={!interactive || selectedId === null}
             onClick={() => setPendingOp(op)}
             className={[
-              'h-14 rounded-md text-2xl font-bold transition-colors disabled:opacity-40',
+              'h-14 short:h-11 rounded-md text-2xl font-bold transition-colors disabled:opacity-40',
               pendingOp === op
                 ? 'bg-ink text-paper'
                 : 'bg-tile text-ink hover:bg-line',
             ].join(' ')}
-            aria-label={`operator ${op}`}
+            aria-label={OP_NAMES[op]}
           >
             {OP_SYMBOL[op]}
           </button>

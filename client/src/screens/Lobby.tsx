@@ -8,6 +8,7 @@ import {
   type TeamId,
 } from '@24game/shared';
 import { RuleToggles } from '../components/RuleToggles.js';
+import { canNativeShare, shareOrCopy } from '../share.js';
 
 interface Props {
   state: PublicGameState;
@@ -36,6 +37,18 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
     (state.players.filter((p) => p.team === 'A').length === 2 &&
       state.players.filter((p) => p.team === 'B').length === 2);
   const [copied, setCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  async function invite() {
+    const outcome = await shareOrCopy({
+      text: `Play 24 with me. Room ${state.roomCode}:`,
+      url: `${window.location.origin}/room/${state.roomCode}`,
+    });
+    if (outcome === 'copied') {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 1500);
+    }
+  }
 
   async function copyCode() {
     try {
@@ -56,6 +69,9 @@ export function Lobby({ state, selfId, onConfigure, onSetTeam, onStart, onLeave 
         </p>
         <button type="button" className="min-h-[44px] px-3 text-sm text-muted underline" onClick={() => void copyCode()}>
           {copied ? 'Copied' : 'Tap to copy'}
+        </button>
+        <button type="button" className="btn-secondary mt-2 h-12 w-full" onClick={() => void invite()}>
+          {linkCopied ? 'Link copied' : canNativeShare() ? 'Share invite link' : 'Copy invite link'}
         </button>
       </div>
 

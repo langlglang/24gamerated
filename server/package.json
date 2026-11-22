@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "migrate": "node dist/db/migrate-cli.js",
+    "delete-account": "node dist/db/delete-account-cli.js",
     "start": "node dist/index.js"
   },
   "dependencies": {

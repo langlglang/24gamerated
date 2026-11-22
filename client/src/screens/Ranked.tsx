@@ -94,12 +94,12 @@ export function Ranked({ game, auth, onBack }: Props) {
   return (
     <div className="mx-auto flex w-full max-w-md flex-col gap-4 p-4">
       <header className="flex items-center justify-between">
-        <button type="button" className="text-sm text-muted underline" onClick={onBack}>
+        <button type="button" className="-ml-3 min-h-[44px] px-3 text-sm text-muted underline" onClick={onBack}>
           Back
         </button>
         <button
           type="button"
-          className="text-sm text-muted underline"
+          className="-mr-3 min-h-[44px] px-3 text-sm text-muted underline"
           onClick={() => {
             auth.logout();
             onBack();
@@ -177,6 +177,11 @@ export function Ranked({ game, auth, onBack }: Props) {
           <input
             className="field flex-1"
             placeholder="Their username"
+            aria-label="Friend's username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="send"
             maxLength={16}
             value={challengeName}
             onChange={(e) => setChallengeName(e.target.value)}

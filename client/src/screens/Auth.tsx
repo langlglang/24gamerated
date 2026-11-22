@@ -222,6 +222,9 @@ export function Auth({ auth, onDone, onCancel, initialView = 'login' }: Props) {
               label="Username"
               hint="Shown to other players. 3–16 letters, numbers, _ or -."
               autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               maxLength={16}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -232,6 +235,9 @@ export function Auth({ auth, onDone, onCancel, initialView = 'login' }: Props) {
             id="login-identifier"
             label="Email or username"
             autoComplete="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
           />

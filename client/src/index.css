@@ -80,4 +80,14 @@
   .rule {
     @apply border-t border-ink;
   }
+
+  /* A phone held sideways: cover the play screen (see TurnUpright.tsx). */
+  .turn-upright {
+    @apply fixed inset-0 z-50 hidden flex-col items-center justify-center gap-2 bg-paper p-6 text-center;
+  }
+  @media (orientation: landscape) and (max-height: 500px) {
+    .turn-upright {
+      display: flex;
+    }
+  }
 }

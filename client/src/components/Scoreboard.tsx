@@ -13,7 +13,7 @@ function statusOf(p: PlayerView, state: PublicGameState): string {
 
 /**
  * Two players: a big head-to-head line, you on the left. Teams: two columns.
- * Three or more: a ranked list that stays readable up to the 10-seat cap.
+ * Three or four: a ranked list. Five or more: the same, in two compact columns.
  */
 export function Scoreboard({
   state,
@@ -89,6 +89,38 @@ export function Scoreboard({
   const ranked = [...state.players].sort(
     (a, b) => (state.scores[b.id] ?? 0) - (state.scores[a.id] ?? 0),
   );
+
+  // Five or more: two compact columns, so a full room still leaves the cards
+  // and the Buzz button on screen on a phone.
+  if (ranked.length >= 5) {
+    return (
+      <ol className="grid grid-cols-2 gap-x-4 border-y border-ink py-1" aria-label="Scores">
+        {ranked.map((p) => {
+          const isSelf = p.id === selfId;
+          const status = statusOf(p, state);
+          return (
+            <li
+              key={p.id}
+              className={[
+                'flex min-w-0 items-center justify-between gap-2 rounded px-1 py-0.5 text-sm',
+                p.id === state.activePlayerId ? 'bg-mark' : '',
+                p.lockedOut || !p.connected ? 'text-muted' : '',
+                !p.connected ? 'italic' : '',
+              ].join(' ')}
+            >
+              <span className={['min-w-0 truncate', isSelf ? 'font-semibold' : '', p.lockedOut ? 'line-through' : ''].join(' ')}>
+                {isSelf ? 'You' : p.name}
+                {status && <span className="sr-only">, {status}</span>}
+              </span>
+              <span className="font-display text-lg font-extrabold leading-tight tabular-nums">
+                {formatScore(state.scores[p.id] ?? 0)}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    );
+  }
 
   return (
     <ol className="divide-y divide-line border-y border-ink">

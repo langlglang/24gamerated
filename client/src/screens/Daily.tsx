@@ -19,6 +19,8 @@ import {
 } from '@24game/shared';
 import { CombineBoard } from '../components/CombineBoard.js';
 import type { AuthApi } from '../useAuth.js';
+import { canNativeShare, shareOrCopy } from '../share.js';
+import { TurnUpright } from '../components/TurnUpright.js';
 
 // ------------------------------------------------------------ requests
 
@@ -484,6 +486,7 @@ function Play({
 
   return (
     <div className="flex flex-col gap-4">
+      <TurnUpright />
       <div className="flex items-end justify-between">
         <div>
           <p className="eyebrow">Use every card</p>
@@ -634,12 +637,10 @@ function Solved({
   const firstSolver = stats ? (stats.mine ? stats.mine.fasterThanPct === null : stats.solvers === 0) : false;
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(puzzleShareText(puzzle, mineTime, pct));
+    const outcome = await shareOrCopy({ text: puzzleShareText(puzzle, mineTime, pct) });
+    if (outcome === 'copied') {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setCopied(false);
     }
   }
 
@@ -710,7 +711,7 @@ function Solved({
       )}
 
       <button type="button" className="btn-primary h-12" onClick={() => void copy()}>
-        {copied ? 'Copied' : 'Copy result'}
+        {copied ? 'Copied' : canNativeShare() ? 'Share result' : 'Copy result'}
       </button>
       <p className="sr-only" role="status">{copied ? 'Result copied to clipboard.' : ''}</p>
       <p className="text-center text-sm text-muted">New puzzle at midnight UTC.</p>
