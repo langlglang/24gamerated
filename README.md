@@ -536,6 +536,10 @@ From a local load test (bots playing full matches, each hand about 2–3× faste
 - **Rough safe numbers per instance:** Render free (0.1 CPU) 300–500 players; Starter (0.5 CPU)
   2 000–2 500; 1–2 CPU about 4 000–6 000. Past that, the in-memory rooms would need to move to a
   shared store and run on several instances.
+- **Checked on Render.** A free (0.1 CPU) instance with bots in 3–4 player rooms answered buzzes
+  in 83 ms at the 95th percentile with 268 players and 151 ms with 536 (both including ~45 ms
+  of network). It slowed to 345 ms with 1 236 players (p99 600 ms), with no errors or dropped
+  connections. Bots play 2–3× faster than people, so real players cost less.
 - **Sign-ins.** Password hashing runs in two worker threads, so a burst of logins no longer stalls
   live games (at 40 logins a second the server still answered in under 20 ms). Logins queue
   instead; more than 200 waiting are refused with a "try again" message.
