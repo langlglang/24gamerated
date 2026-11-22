@@ -241,7 +241,13 @@ export function Home({
           Join a room
         </button>
       </p>
-      <p className="flex items-center justify-center gap-4 text-xs text-muted">
+      <p className="flex flex-wrap items-center justify-center gap-x-4 text-xs text-muted">
+        <a href="/how-to-play" className="min-h-[44px] content-center underline">
+          How to play
+        </a>
+        <a href="/solver" className="min-h-[44px] content-center underline">
+          Solver
+        </a>
         <a href="/privacy" className="min-h-[44px] content-center underline">
           Privacy
         </a>

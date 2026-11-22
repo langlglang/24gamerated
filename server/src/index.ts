@@ -1,5 +1,6 @@
 import './env.js';
 import { flushMonitoring, reportClientError, reportError } from './monitoring.js';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -42,6 +43,7 @@ import {
 } from './db/challenges.js';
 import { isWellFormed } from './payloads.js';
 import { SlidingWindowLimiter } from './throttle.js';
+import { renderIndex, robotsTxt, sitemapXml } from './seo.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(here, CLIENT_DIST_RELATIVE);
@@ -981,20 +983,35 @@ app.use(
     res.status(404).type('text/plain').send('Not found');
   },
 );
+app.get('/robots.txt', (_req, res) => {
+  res.type('text/plain').set('Cache-Control', 'public, max-age=3600').send(robotsTxt());
+});
+app.get('/sitemap.xml', (_req, res) => {
+  res.type('application/xml').set('Cache-Control', 'public, max-age=3600').send(sitemapXml());
+});
+
 app.use(express.static(clientDist, { index: false }));
 
-function sendIndex(res: express.Response): void {
+/** index.html, read once: the build doesn't change while the server runs. */
+let indexTemplate: string | null = null;
+
+function sendIndex(req: express.Request, res: express.Response): void {
   // Always revalidate the page itself, so a deploy is picked up at once.
   res.setHeader('Cache-Control', 'no-cache');
-  res.sendFile(path.join(clientDist, 'index.html'), (err) => {
-    if (err && !res.headersSent) {
-      res.status(404).type('text/plain').send('Client build not found. Run `npm run build` first.');
-    }
-  });
+  try {
+    indexTemplate ??= readFileSync(path.join(clientDist, 'index.html'), 'utf8');
+  } catch {
+    res.status(404).type('text/plain').send('Client build not found. Run `npm run build` first.');
+    return;
+  }
+  // Each page gets its own title, description and preview tags. An unknown
+  // path still loads the app (which shows its not-found screen) but answers 404.
+  const { html, status } = renderIndex(indexTemplate, req.path);
+  res.status(status).type('html').send(html);
 }
 
 // Client-side routes. Anchored so /apiary or /healthzz are pages, not API paths.
-app.get(/^(?!\/(api|healthz|socket\.io)(\/|$)).*/, (_req, res) => sendIndex(res));
+app.get(/^(?!\/(api|healthz|socket\.io)(\/|$)).*/, (req, res) => sendIndex(req, res));
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });

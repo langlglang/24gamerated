@@ -146,3 +146,77 @@ export function expressionForSteps(
   const [only, ...rest] = [...nodes.values()];
   return only && rest.length === 0 ? only.text : null;
 }
+
+/**
+ * Canonical shape of an expression, so solutions that differ only in order
+ * count once: a run of + and − is a sorted list of added and subtracted terms,
+ * a run of × and ÷ a sorted list of multiplied and divided factors. So
+ * "10 + 12 + 13 - 11" and "13 - 11 + 12 + 10" share a key.
+ */
+type Shape =
+  | { kind: 'leaf'; key: string }
+  | { kind: 'sum' | 'prod'; plus: Shape[]; minus: Shape[]; key: string };
+
+function combineShape(a: Shape, op: Op, b: Shape): Shape {
+  const kind = op === '+' || op === '-' ? 'sum' : 'prod';
+  const plusOf = (x: Shape) => (x.kind === kind ? x.plus : [x]);
+  const minusOf = (x: Shape) => (x.kind === kind ? x.minus : []);
+  const inverse = op === '-' || op === '/';
+  const plus = [...plusOf(a), ...(inverse ? minusOf(b) : plusOf(b))];
+  const minus = [...minusOf(a), ...(inverse ? plusOf(b) : minusOf(b))];
+  const sorted = (xs: Shape[]) => xs.map((x) => x.key).sort().join(',');
+  const key = `${kind}(${sorted(plus)}|${sorted(minus)})`;
+  return { kind, plus, minus, key };
+}
+
+/**
+ * Every distinct way to make 24 from `values`, as readable expressions (the
+ * public solver page). Same search as `solveTable`, but it keeps going after
+ * the first hit. Solutions that are the same up to reordering terms or
+ * factors are listed once, by their shortest text. Stops at `limit`.
+ */
+export function allSolutions(values: readonly number[], rules: RuleSet, limit = 100): string[] {
+  const found = new Map<string, string>();
+  type Item = Node & { shape: Shape };
+  const walk = (nodes: readonly Item[]): void => {
+    if (found.size >= limit) return;
+    if (nodes.length === 1) {
+      const only = nodes[0]!;
+      if (!equals(only.value, rational(TARGET_VALUE))) return;
+      const seen = found.get(only.shape.key);
+      if (seen === undefined || only.text.length < seen.length) found.set(only.shape.key, only.text);
+      return;
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = 0; j < nodes.length; j++) {
+        if (i === j) continue;
+        const a = nodes[i]!;
+        const b = nodes[j]!;
+        for (const op of OPS) {
+          if ((op === '+' || op === '*') && i > j) continue;
+          const outcome = computeCombine(a.value, op, b.value, rules);
+          if (!outcome.ok) continue;
+          const rest = nodes.filter((_, k) => k !== i && k !== j);
+          rest.push({
+            id: '',
+            value: outcome.value,
+            text: renderCombine(a, op, b),
+            prec: OP_PRECEDENCE[op],
+            shape: combineShape(a.shape, op, b.shape),
+          });
+          walk(rest);
+        }
+      }
+    }
+  };
+  walk(
+    tableFromValues(values).map((card) => ({
+      id: card.id,
+      value: card.value,
+      text: card.label,
+      prec: LEAF_PRECEDENCE,
+      shape: { kind: 'leaf' as const, key: card.label },
+    })),
+  );
+  return [...found.values()];
+}
